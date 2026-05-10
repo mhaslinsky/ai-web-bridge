@@ -32,7 +32,7 @@ claude.ai/design   (and future adapters)
 Requires Node 20+ and the `claude` CLI on your PATH (so the installer can register the MCP server via `claude mcp add`).
 
 ```bash
-git clone https://github.com/<you>/ai-web-bridge.git
+git clone https://github.com/mhaslinsky/ai-web-bridge.git
 cd ai-web-bridge
 ./scripts/install.sh
 ```
