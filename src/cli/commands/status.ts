@@ -1,9 +1,10 @@
 import { getRuntimeStatus, getBrowser } from '../../server/browser.js';
 import { loadAdapters } from '../../server/adapter-loader.js';
 
-/** `ai-web-bridge status` — report Chromium PID, CDP reachability, loaded adapters, and open tab hosts. */
+/** `ai-web-bridge status` — report Chromium PID, CDP reachability, loaded adapters, and open tab hosts for the active profile. */
 export async function statusCommand(): Promise<void> {
   const status = await getRuntimeStatus();
+  console.log(`Active profile: ${status.profile}`);
   console.log(`Chromium running: ${status.chromeRunning ? `yes (PID ${status.pid})` : 'no'}`);
   console.log(`CDP port: ${status.cdpPort ?? '(none)'}`);
   console.log(`CDP reachable: ${status.cdpReachable ? 'yes' : 'no'}`);

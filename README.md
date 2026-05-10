@@ -17,12 +17,13 @@ Claude Code  /  any MCP-aware client
       ↓ stdio
 ai-web-bridge MCP server
       ↓ Playwright CDP (chromium.connectOverCDP)
-Automation Chromium  (--user-data-dir=~/.ai-web-bridge/profile)
+Automation Chromium  (--user-data-dir=~/.ai-web-bridge/profile-<active>)
       ↓ logged-in HTTPS, persistent session
 claude.ai/design   (and future adapters)
 ```
 
-- **Dedicated profile.** Chromium runs separate from your daily-driver browser. You sign in once per site; the profile keeps the cookies. Blast radius is bounded to what you've explicitly logged into.
+- **Named profiles.** You can register multiple profiles (e.g. `personal` and `enterprise`) and switch between them with `ai-web-bridge profiles use <name>`. Each profile is its own Chromium user-data-dir, so cookies for the same site can coexist for different accounts. Only one profile is active at a time; subsequent `login` / `start` / `web_run` calls target the active one.
+- **Dedicated profile.** Chromium runs separate from your daily-driver browser. You sign in once per site per profile; the profile keeps the cookies. Blast radius is bounded to what you've explicitly logged into.
 - **2-tool dispatcher surface.** Adding 10 sites with 6 actions each adds **zero tools** to the MCP global surface — they're discovered via `web_list_adapters` and dispatched via `web_run`. Action metadata (risk level, mutates state, writes files, requires confirmation) is returned on discovery so callers know what they're invoking.
 - **Server-enforced origin policy.** Each adapter declares allowed hosts; the dispatcher refuses to operate when the page has navigated elsewhere.
 - **Per-profile action queue.** Concurrent calls are serialized to prevent races on a stateful browser.
@@ -46,12 +47,32 @@ If you don't have `claude` on PATH the script will print the exact command to ru
 ## First-time setup
 
 ```bash
-ai-web-bridge start                 # launch the dedicated Chromium
-ai-web-bridge login claude-design   # opens claude.ai in the automation profile; sign in
+ai-web-bridge start                 # launch Chromium for the default (personal) profile
+ai-web-bridge login claude-design   # sign in to the active profile's Chromium
 ai-web-bridge status                # confirm Chromium is up and tabs are visible
 ```
 
 Restart Claude Code (or reconnect via `/mcp`). `/mcp` should show `ai-web-bridge` connected with two tools.
+
+## Profiles (multi-account)
+
+Each profile is a separate Chromium user-data-dir under `~/.ai-web-bridge/profile-<name>/`. The default profile is `personal`. To add an additional account (e.g. an enterprise Claude account):
+
+```bash
+ai-web-bridge profiles add enterprise          # create the empty profile
+ai-web-bridge profiles use enterprise          # switch active profile
+ai-web-bridge login claude-design              # sign in as the enterprise account
+ai-web-bridge profiles use personal            # switch back to personal
+```
+
+Other commands:
+
+```bash
+ai-web-bridge profiles list                    # list profiles; * marks the active one
+ai-web-bridge profiles remove <name>           # delete a profile (refuses active or last-remaining)
+```
+
+Migration note: if you installed before named-profile support, the legacy `~/.ai-web-bridge/profile/` directory is removed on first run and replaced with empty `personal` and `enterprise` profiles. **You will need to re-login.**
 
 ## Usage from Claude Code
 

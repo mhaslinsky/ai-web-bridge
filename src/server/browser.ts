@@ -1,14 +1,27 @@
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, openSync } from 'node:fs';
+import { createServer } from 'node:net';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
-import { DEFAULT_CDP_PORT, RUNTIME_PATHS } from './runtime-paths.js';
+import { DEFAULT_CDP_PORT, getRuntimePaths } from './runtime-paths.js';
+import { ensureInitialized, getActiveProfile, runLegacyMigration } from './profile-store.js';
 
-let browserPromise: Promise<Browser> | null = null;
+/** Cache of connected browsers, keyed by profile name. */
+const browserPromises = new Map<string, Promise<Browser>>();
 
-/** Create the runtime directory tree under ~/.ai-web-bridge/ if it doesn't already exist. */
-function ensureRuntimeDirs(): void {
-  for (const dir of [RUNTIME_PATHS.root, RUNTIME_PATHS.profileDir, RUNTIME_PATHS.runtimeDir, RUNTIME_PATHS.logsDir]) {
+/** Resolve which profile to operate on. Defaults to the active profile if not specified. */
+function resolveProfile(profile?: string): string {
+  if (profile) return profile;
+  // First-touch initialization: migrate legacy state, then ensure a default profile exists.
+  runLegacyMigration();
+  ensureInitialized();
+  return getActiveProfile();
+}
+
+/** Create the runtime directory tree for `profile` if missing. */
+function ensureRuntimeDirs(profile: string): void {
+  const paths = getRuntimePaths(profile);
+  for (const dir of [paths.root, paths.profileDir, paths.runtimeDir, paths.logsDir]) {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   }
 }
@@ -37,67 +50,98 @@ function isPidAlive(pid: number): boolean {
   }
 }
 
+/** Ask the OS for a free TCP port by binding to 0 and reading the assigned port back. */
+async function findFreePort(): Promise<number> {
+  return new Promise<number>((resolveFn, rejectFn) => {
+    const server = createServer();
+    server.unref();
+    server.on('error', rejectFn);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (typeof address === 'object' && address && 'port' in address) {
+        const { port } = address;
+        server.close(() => resolveFn(port));
+      } else {
+        rejectFn(new Error('Failed to read assigned port from net.createServer.'));
+      }
+    });
+  });
+}
+
 export interface RuntimeStatus {
+  profile: string;
   chromeRunning: boolean;
   cdpPort: number | null;
   pid: number | null;
   cdpReachable: boolean;
 }
 
-/** Snapshot of the automation Chromium's runtime state from on-disk pid/port files + a CDP probe. */
-export async function getRuntimeStatus(): Promise<RuntimeStatus> {
+/** Snapshot of the named profile's Chromium runtime state from on-disk pid/port files + a CDP probe. */
+export async function getRuntimeStatus(profile?: string): Promise<RuntimeStatus> {
+  const profileName = resolveProfile(profile);
+  const paths = getRuntimePaths(profileName);
   let pid: number | null = null;
   let cdpPort: number | null = null;
-  if (existsSync(RUNTIME_PATHS.pidFile)) {
-    const rawPid = readFileSync(RUNTIME_PATHS.pidFile, 'utf8').trim();
+  if (existsSync(paths.pidFile)) {
+    const rawPid = readFileSync(paths.pidFile, 'utf8').trim();
     const parsedPid = Number(rawPid);
     if (Number.isInteger(parsedPid) && parsedPid > 0) pid = parsedPid;
   }
-  if (existsSync(RUNTIME_PATHS.portFile)) {
-    const rawPort = readFileSync(RUNTIME_PATHS.portFile, 'utf8').trim();
+  if (existsSync(paths.portFile)) {
+    const rawPort = readFileSync(paths.portFile, 'utf8').trim();
     const parsedPort = Number(rawPort);
     if (Number.isInteger(parsedPort) && parsedPort > 0) cdpPort = parsedPort;
   }
   const chromeRunning = pid !== null && isPidAlive(pid);
   const cdpReachable = cdpPort !== null && (await probeCdp(cdpPort, 300));
-  return { chromeRunning, cdpPort, pid, cdpReachable };
+  return { profile: profileName, chromeRunning, cdpPort, pid, cdpReachable };
 }
 
 export interface LaunchOptions {
+  profile?: string;
   port?: number;
   detached?: boolean;
 }
 
 /**
- * Launch a detached Chromium with a remote debugging port and the dedicated
- * automation profile. The process survives this process exiting so the CLI
- * and MCP server can both attach via CDP independently.
+ * Launch a detached Chromium against the named profile's user-data-dir.
+ * The first profile to launch keeps DEFAULT_CDP_PORT (9222) for backward
+ * familiarity; subsequent profiles get OS-assigned free ports. The process
+ * survives this process exiting so the CLI and MCP server can both attach
+ * via CDP independently.
  */
-export async function launchChromium(opts: LaunchOptions = {}): Promise<{ pid: number; port: number }> {
-  ensureRuntimeDirs();
-  const port = opts.port ?? DEFAULT_CDP_PORT;
-  const status = await getRuntimeStatus();
+export async function launchChromium(opts: LaunchOptions = {}): Promise<{ profile: string; pid: number; port: number }> {
+  const profileName = resolveProfile(opts.profile);
+  ensureRuntimeDirs(profileName);
+  const paths = getRuntimePaths(profileName);
+
+  const status = await getRuntimeStatus(profileName);
   if (status.chromeRunning && status.cdpReachable && status.pid) {
-    return { pid: status.pid, port: status.cdpPort ?? port };
+    return { profile: profileName, pid: status.pid, port: status.cdpPort ?? DEFAULT_CDP_PORT };
+  }
+
+  // Pick a port: explicit > previously-used > default if free > OS-assigned.
+  let port = opts.port ?? status.cdpPort ?? DEFAULT_CDP_PORT;
+  if (await probeCdp(port, 200)) {
+    // Port is in use by something else; let the OS pick.
+    port = await findFreePort();
   }
 
   const chromiumExecutable = chromium.executablePath();
   if (!chromiumExecutable) {
-    throw new Error(
-      "Playwright's bundled Chromium isn't installed. Run: npx playwright install chromium"
-    );
+    throw new Error("Playwright's bundled Chromium isn't installed. Run: npx playwright install chromium");
   }
 
   const launchArgs = [
     `--remote-debugging-port=${port}`,
-    `--user-data-dir=${RUNTIME_PATHS.profileDir}`,
+    `--user-data-dir=${paths.profileDir}`,
     '--no-default-browser-check',
     '--no-first-run',
     '--disable-features=ChromeWhatsNewUI,GlobalMediaControls'
   ];
 
-  const stdoutFd = openSync(`${RUNTIME_PATHS.logsDir}/chrome.out.log`, 'a');
-  const stderrFd = openSync(`${RUNTIME_PATHS.logsDir}/chrome.err.log`, 'a');
+  const stdoutFd = openSync(`${paths.logsDir}/chrome.out.log`, 'a');
+  const stderrFd = openSync(`${paths.logsDir}/chrome.err.log`, 'a');
 
   const child = spawn(chromiumExecutable, launchArgs, {
     detached: opts.detached !== false,
@@ -108,81 +152,91 @@ export async function launchChromium(opts: LaunchOptions = {}): Promise<{ pid: n
   }
   child.unref();
 
-  writeFileSync(RUNTIME_PATHS.pidFile, String(child.pid), 'utf8');
-  writeFileSync(RUNTIME_PATHS.portFile, String(port), 'utf8');
+  writeFileSync(paths.pidFile, String(child.pid), 'utf8');
+  writeFileSync(paths.portFile, String(port), 'utf8');
 
   // Wait up to 8s for the CDP port to come up.
   const deadline = Date.now() + 8000;
   while (Date.now() < deadline) {
-    if (await probeCdp(port, 250)) return { pid: child.pid, port };
+    if (await probeCdp(port, 250)) return { profile: profileName, pid: child.pid, port };
     await sleep(150);
   }
-  throw new Error(`Chromium launched (pid ${child.pid}) but CDP port ${port} did not become reachable within 8s.`);
+  throw new Error(
+    `Chromium for profile "${profileName}" launched (pid ${child.pid}) but CDP port ${port} did not become reachable within 8s.`
+  );
 }
 
-/** Send SIGTERM to the recorded automation Chromium PID; no-op if not running. */
-export async function stopChromium(): Promise<{ stopped: boolean; pid: number | null }> {
-  const status = await getRuntimeStatus();
-  if (!status.chromeRunning || status.pid === null) return { stopped: false, pid: null };
+/** Send SIGTERM to the named profile's recorded Chromium PID; no-op if not running. */
+export async function stopChromium(profile?: string): Promise<{ profile: string; stopped: boolean; pid: number | null }> {
+  const profileName = resolveProfile(profile);
+  const status = await getRuntimeStatus(profileName);
+  if (!status.chromeRunning || status.pid === null) return { profile: profileName, stopped: false, pid: null };
   try {
     process.kill(status.pid, 'SIGTERM');
   } catch {
-    return { stopped: false, pid: status.pid };
+    return { profile: profileName, stopped: false, pid: status.pid };
   }
-  return { stopped: true, pid: status.pid };
+  // Drop any cached Browser pointing at this profile so the next caller reconnects.
+  browserPromises.delete(profileName);
+  return { profile: profileName, stopped: true, pid: status.pid };
 }
 
 /**
- * Get a connected Browser. Hybrid recovery: if Chromium isn't reachable,
- * launches it transparently. The returned Browser owns the persistent
- * BrowserContext for the automation profile.
+ * Get a connected Browser for the named profile (or the active one). Hybrid
+ * recovery: if Chromium isn't reachable, launches it transparently. The
+ * returned Browser owns the persistent BrowserContext for that profile's
+ * user-data-dir.
  */
-export async function getBrowser(): Promise<Browser> {
-  if (browserPromise) {
+export async function getBrowser(profile?: string): Promise<Browser> {
+  const profileName = resolveProfile(profile);
+  const cached = browserPromises.get(profileName);
+  if (cached) {
     try {
-      const cachedBrowser = await browserPromise;
-      if (cachedBrowser.isConnected()) return cachedBrowser;
+      const browser = await cached;
+      if (browser.isConnected()) return browser;
     } catch {
       // fall through and reconnect
     }
-    browserPromise = null;
+    browserPromises.delete(profileName);
   }
 
-  browserPromise = (async () => {
-    let status = await getRuntimeStatus();
+  const launching = (async () => {
+    let status = await getRuntimeStatus(profileName);
     if (!status.cdpReachable) {
-      await launchChromium();
-      status = await getRuntimeStatus();
+      await launchChromium({ profile: profileName });
+      status = await getRuntimeStatus(profileName);
     }
     const port = status.cdpPort ?? DEFAULT_CDP_PORT;
     const browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
     browser.on('disconnected', () => {
-      browserPromise = null;
+      browserPromises.delete(profileName);
     });
     return browser;
   })();
 
-  return browserPromise;
+  browserPromises.set(profileName, launching);
+  return launching;
 }
 
 /**
- * Get the first usable BrowserContext on the running Chromium. Prefers an
- * existing context (so Playwright sees the user's logged-in tabs); creates
- * one only if none exists.
+ * Get the first usable BrowserContext on the named profile's Chromium.
+ * Prefers an existing context (so Playwright sees the user's logged-in tabs);
+ * creates one only if none exists.
  */
-export async function getContext(): Promise<BrowserContext> {
-  const browser = await getBrowser();
+export async function getContext(profile?: string): Promise<BrowserContext> {
+  const browser = await getBrowser(profile);
   const contexts = browser.contexts();
   if (contexts.length > 0 && contexts[0]) return contexts[0];
   return browser.newContext();
 }
 
 /**
- * Get a Page targeting `targetUrl`. If a tab is already on a matching origin,
- * reuse it; otherwise open a new tab.
+ * Get a Page on the named profile (or active profile) targeting `targetUrl`.
+ * If a tab is already on a matching origin, reuse it; otherwise open a new
+ * tab.
  */
-export async function getPage(targetUrl?: string): Promise<Page> {
-  const context = await getContext();
+export async function getPage(targetUrl?: string, profile?: string): Promise<Page> {
+  const context = await getContext(profile);
   const openPages = context.pages();
   if (targetUrl) {
     const target = new URL(targetUrl);
