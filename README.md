@@ -1,5 +1,7 @@
 # ai-web-bridge
 
+[![CI](https://github.com/mhaslinsky/ai-web-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/mhaslinsky/ai-web-bridge/actions/workflows/ci.yml)
+
 An MCP server that lets Claude Code (and other MCP-aware AI clients) drive auth-walled web tools through a dedicated Chromium profile via Playwright CDP. **v1 ships an adapter for [claude.ai/design](https://claude.ai/design)**; adding a new web tool is one TypeScript file under `src/adapters/`.
 
 > **Status: v1, personal-tool maturity.** Verified end-to-end against the live claude.ai/design UI as of this commit. Selectors are inherently DOM-fragile — when Anthropic ships UI changes, expect to tune locators in `src/adapters/claude-design.ts`. PRs welcome if you fix yours.

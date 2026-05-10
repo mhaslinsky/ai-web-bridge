@@ -13,11 +13,10 @@
     "isolatedModules": true,
     "verbatimModuleSyntax": false,
     "outDir": "dist",
-    "rootDir": "src",
     "declaration": false,
     "sourceMap": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["src/**/*.ts"],
+  "include": ["src/**/*.ts", "test/**/*.ts"],
   "exclude": ["node_modules", "dist"]
 }
