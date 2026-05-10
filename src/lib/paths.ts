@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
 import { resolve, sep } from 'node:path';
 
+/** Thrown when a destination path escapes the allowed roots or would silently overwrite. */
 export class PathPolicyError extends Error {
   constructor(message: string) {
     super(message);
@@ -9,11 +10,12 @@ export class PathPolicyError extends Error {
   }
 }
 
+/** True if `child`, after symlink-free resolution, lives at or under `parent`. */
 function isUnder(child: string, parent: string): boolean {
-  const c = resolve(child);
-  const p = resolve(parent);
-  if (c === p) return true;
-  return c.startsWith(p.endsWith(sep) ? p : p + sep);
+  const childAbsolute = resolve(child);
+  const parentAbsolute = resolve(parent);
+  if (childAbsolute === parentAbsolute) return true;
+  return childAbsolute.startsWith(parentAbsolute.endsWith(sep) ? parentAbsolute : parentAbsolute + sep);
 }
 
 export interface PathPolicyOptions {
@@ -23,10 +25,11 @@ export interface PathPolicyOptions {
 
 const DEFAULT_AIDB_ROOT = resolve(homedir(), 'Desktop', 'AIDB');
 
-export function defaultAllowedRoots(opts: PathPolicyOptions = {}): string[] {
+/** Default writable roots: os.tmpdir() + ~/Desktop/AIDB, plus any `extraRoots` opted in. */
+export function defaultAllowedRoots(options: PathPolicyOptions = {}): string[] {
   const roots = [tmpdir(), DEFAULT_AIDB_ROOT];
-  if (opts.extraRoots) roots.push(...opts.extraRoots);
-  return roots.map((r) => resolve(r));
+  if (options.extraRoots) roots.push(...options.extraRoots);
+  return roots.map((root) => resolve(root));
 }
 
 export interface ValidateDestOptions extends PathPolicyOptions {
@@ -40,19 +43,19 @@ export interface ValidateDestOptions extends PathPolicyOptions {
  *
  * Throws PathPolicyError on violation. Returns the resolved absolute path.
  */
-export function validateDestPath(inputPath: string, opts: ValidateDestOptions = {}): string {
-  const resolved = resolve(inputPath);
-  const roots = defaultAllowedRoots(opts);
-  const ok = roots.some((root) => isUnder(resolved, root));
-  if (!ok) {
+export function validateDestPath(inputPath: string, options: ValidateDestOptions = {}): string {
+  const resolvedPath = resolve(inputPath);
+  const allowedRoots = defaultAllowedRoots(options);
+  const isUnderAllowedRoot = allowedRoots.some((root) => isUnder(resolvedPath, root));
+  if (!isUnderAllowedRoot) {
     throw new PathPolicyError(
-      `Refusing to write to ${resolved}: not under an allowed root (${roots.join(', ')}).`
+      `Refusing to write to ${resolvedPath}: not under an allowed root (${allowedRoots.join(', ')}).`
     );
   }
-  if (!opts.force && existsSync(resolved)) {
+  if (!options.force && existsSync(resolvedPath)) {
     throw new PathPolicyError(
-      `Refusing to overwrite existing file at ${resolved}. Pass force: true to override.`
+      `Refusing to overwrite existing file at ${resolvedPath}. Pass force: true to override.`
     );
   }
-  return resolved;
+  return resolvedPath;
 }

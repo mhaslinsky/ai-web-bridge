@@ -1,5 +1,6 @@
 import { launchChromium, getRuntimeStatus } from '../../server/browser.js';
 
+/** `ai-web-bridge start` — launch the automation Chromium (no-op if already running). */
 export async function startCommand(): Promise<void> {
   const before = await getRuntimeStatus();
   if (before.chromeRunning && before.cdpReachable) {

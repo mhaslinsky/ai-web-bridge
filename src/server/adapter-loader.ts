@@ -18,57 +18,63 @@ export interface LoadAdaptersOptions {
   warn?: (message: string) => void;
 }
 
-function isAdapter(x: unknown): x is AdapterDef {
-  if (!x || typeof x !== 'object') return false;
-  const a = x as Record<string, unknown>;
+/** Type guard: does `value` have the minimum AdapterDef fields with the right types? */
+function isAdapter(value: unknown): value is AdapterDef {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Record<string, unknown>;
   return (
-    typeof a.slug === 'string' &&
-    typeof a.display_name === 'string' &&
-    Array.isArray(a.allowed_origins) &&
-    typeof a.default_url === 'string' &&
-    typeof a.actions === 'object' &&
-    a.actions !== null
+    typeof candidate.slug === 'string' &&
+    typeof candidate.display_name === 'string' &&
+    Array.isArray(candidate.allowed_origins) &&
+    typeof candidate.default_url === 'string' &&
+    typeof candidate.actions === 'object' &&
+    candidate.actions !== null
   );
 }
 
-export async function loadAdapters(opts: LoadAdaptersOptions = {}): Promise<LoadedAdapters> {
-  const dir = opts.dir ?? DEFAULT_ADAPTERS_DIR;
-  const warn = opts.warn ?? ((m: string) => console.error(m));
+/** Discover and dynamically import every valid adapter module in `options.dir` (defaults to dist/adapters/). */
+export async function loadAdapters(options: LoadAdaptersOptions = {}): Promise<LoadedAdapters> {
+  const directory = options.dir ?? DEFAULT_ADAPTERS_DIR;
+  const warn = options.warn ?? ((message: string) => console.error(message));
 
-  const byslug = new Map<string, AdapterDef>();
+  const bySlug = new Map<string, AdapterDef>();
   const list: AdapterDef[] = [];
 
   let entries: string[] = [];
   try {
-    entries = await readdir(dir);
+    entries = await readdir(directory);
   } catch {
-    return { byslug, list };
+    return { byslug: bySlug, list };
   }
 
   for (const file of entries) {
     if (!file.endsWith('.js') && !file.endsWith('.mjs')) continue;
-    const fullPath = join(dir, file);
+    const fullPath = join(directory, file);
     // Cache-bust so tests can reload mutated adapter files in the same process.
-    const url = pathToFileURL(fullPath).href + `?t=${Date.now()}`;
-    let mod: { adapter?: unknown };
+    const moduleUrl = pathToFileURL(fullPath).href + `?t=${Date.now()}`;
+    let importedModule: { adapter?: unknown };
     try {
-      mod = (await import(url)) as { adapter?: unknown };
-    } catch (err) {
-      warn(`[ai-web-bridge] skipping ${file}: import failed (${err instanceof Error ? err.message : String(err)})`);
+      importedModule = (await import(moduleUrl)) as { adapter?: unknown };
+    } catch (importError) {
+      warn(
+        `[ai-web-bridge] skipping ${file}: import failed (${
+          importError instanceof Error ? importError.message : String(importError)
+        })`
+      );
       continue;
     }
-    const candidate = mod.adapter;
-    if (!isAdapter(candidate)) {
+    const adapterCandidate = importedModule.adapter;
+    if (!isAdapter(adapterCandidate)) {
       warn(`[ai-web-bridge] skipping ${file}: missing or invalid \`adapter\` export`);
       continue;
     }
-    if (byslug.has(candidate.slug)) {
-      warn(`[ai-web-bridge] duplicate adapter slug: ${candidate.slug} (skipping ${file})`);
+    if (bySlug.has(adapterCandidate.slug)) {
+      warn(`[ai-web-bridge] duplicate adapter slug: ${adapterCandidate.slug} (skipping ${file})`);
       continue;
     }
-    byslug.set(candidate.slug, candidate);
-    list.push(candidate);
+    bySlug.set(adapterCandidate.slug, adapterCandidate);
+    list.push(adapterCandidate);
   }
 
-  return { byslug, list };
+  return { byslug: bySlug, list };
 }

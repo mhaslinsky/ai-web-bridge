@@ -6,18 +6,20 @@ import { DEFAULT_CDP_PORT, RUNTIME_PATHS } from './runtime-paths.js';
 
 let browserPromise: Promise<Browser> | null = null;
 
+/** Create the runtime directory tree under ~/.ai-web-bridge/ if it doesn't already exist. */
 function ensureRuntimeDirs(): void {
   for (const dir of [RUNTIME_PATHS.root, RUNTIME_PATHS.profileDir, RUNTIME_PATHS.runtimeDir, RUNTIME_PATHS.logsDir]) {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   }
 }
 
+/** True if Chromium's CDP HTTP endpoint is responding on `port`. */
 async function probeCdp(port: number, timeoutMs = 200): Promise<boolean> {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  const abortController = new AbortController();
+  const timer = setTimeout(() => abortController.abort(), timeoutMs);
   try {
-    const res = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: ctrl.signal });
-    return res.ok;
+    const response = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: abortController.signal });
+    return response.ok;
   } catch {
     return false;
   } finally {
@@ -25,6 +27,7 @@ async function probeCdp(port: number, timeoutMs = 200): Promise<boolean> {
   }
 }
 
+/** True if a process with `pid` is currently running (sends signal 0 to test). */
 function isPidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -41,18 +44,19 @@ export interface RuntimeStatus {
   cdpReachable: boolean;
 }
 
+/** Snapshot of the automation Chromium's runtime state from on-disk pid/port files + a CDP probe. */
 export async function getRuntimeStatus(): Promise<RuntimeStatus> {
   let pid: number | null = null;
   let cdpPort: number | null = null;
   if (existsSync(RUNTIME_PATHS.pidFile)) {
-    const raw = readFileSync(RUNTIME_PATHS.pidFile, 'utf8').trim();
-    const parsed = Number(raw);
-    if (Number.isInteger(parsed) && parsed > 0) pid = parsed;
+    const rawPid = readFileSync(RUNTIME_PATHS.pidFile, 'utf8').trim();
+    const parsedPid = Number(rawPid);
+    if (Number.isInteger(parsedPid) && parsedPid > 0) pid = parsedPid;
   }
   if (existsSync(RUNTIME_PATHS.portFile)) {
-    const raw = readFileSync(RUNTIME_PATHS.portFile, 'utf8').trim();
-    const parsed = Number(raw);
-    if (Number.isInteger(parsed) && parsed > 0) cdpPort = parsed;
+    const rawPort = readFileSync(RUNTIME_PATHS.portFile, 'utf8').trim();
+    const parsedPort = Number(rawPort);
+    if (Number.isInteger(parsedPort) && parsedPort > 0) cdpPort = parsedPort;
   }
   const chromeRunning = pid !== null && isPidAlive(pid);
   const cdpReachable = cdpPort !== null && (await probeCdp(cdpPort, 300));
@@ -77,14 +81,14 @@ export async function launchChromium(opts: LaunchOptions = {}): Promise<{ pid: n
     return { pid: status.pid, port: status.cdpPort ?? port };
   }
 
-  const exec = chromium.executablePath();
-  if (!exec) {
+  const chromiumExecutable = chromium.executablePath();
+  if (!chromiumExecutable) {
     throw new Error(
       "Playwright's bundled Chromium isn't installed. Run: npx playwright install chromium"
     );
   }
 
-  const args = [
+  const launchArgs = [
     `--remote-debugging-port=${port}`,
     `--user-data-dir=${RUNTIME_PATHS.profileDir}`,
     '--no-default-browser-check',
@@ -92,12 +96,12 @@ export async function launchChromium(opts: LaunchOptions = {}): Promise<{ pid: n
     '--disable-features=ChromeWhatsNewUI,GlobalMediaControls'
   ];
 
-  const out = openSync(`${RUNTIME_PATHS.logsDir}/chrome.out.log`, 'a');
-  const err = openSync(`${RUNTIME_PATHS.logsDir}/chrome.err.log`, 'a');
+  const stdoutFd = openSync(`${RUNTIME_PATHS.logsDir}/chrome.out.log`, 'a');
+  const stderrFd = openSync(`${RUNTIME_PATHS.logsDir}/chrome.err.log`, 'a');
 
-  const child = spawn(exec, args, {
+  const child = spawn(chromiumExecutable, launchArgs, {
     detached: opts.detached !== false,
-    stdio: ['ignore', out, err]
+    stdio: ['ignore', stdoutFd, stderrFd]
   });
   if (typeof child.pid !== 'number') {
     throw new Error('Failed to spawn Chromium: no PID returned.');
@@ -116,6 +120,7 @@ export async function launchChromium(opts: LaunchOptions = {}): Promise<{ pid: n
   throw new Error(`Chromium launched (pid ${child.pid}) but CDP port ${port} did not become reachable within 8s.`);
 }
 
+/** Send SIGTERM to the recorded automation Chromium PID; no-op if not running. */
 export async function stopChromium(): Promise<{ stopped: boolean; pid: number | null }> {
   const status = await getRuntimeStatus();
   if (!status.chromeRunning || status.pid === null) return { stopped: false, pid: null };
@@ -135,8 +140,8 @@ export async function stopChromium(): Promise<{ stopped: boolean; pid: number | 
 export async function getBrowser(): Promise<Browser> {
   if (browserPromise) {
     try {
-      const b = await browserPromise;
-      if (b.isConnected()) return b;
+      const cachedBrowser = await browserPromise;
+      if (cachedBrowser.isConnected()) return cachedBrowser;
     } catch {
       // fall through and reconnect
     }
@@ -167,8 +172,8 @@ export async function getBrowser(): Promise<Browser> {
  */
 export async function getContext(): Promise<BrowserContext> {
   const browser = await getBrowser();
-  const ctxs = browser.contexts();
-  if (ctxs.length > 0 && ctxs[0]) return ctxs[0];
+  const contexts = browser.contexts();
+  if (contexts.length > 0 && contexts[0]) return contexts[0];
   return browser.newContext();
 }
 
@@ -177,25 +182,27 @@ export async function getContext(): Promise<BrowserContext> {
  * reuse it; otherwise open a new tab.
  */
 export async function getPage(targetUrl?: string): Promise<Page> {
-  const ctx = await getContext();
-  const pages = ctx.pages();
+  const context = await getContext();
+  const openPages = context.pages();
   if (targetUrl) {
     const target = new URL(targetUrl);
-    for (const p of pages) {
+    for (const page of openPages) {
       try {
-        const u = new URL(p.url());
-        if (u.host === target.host) {
-          if (!p.url().startsWith(targetUrl)) await p.goto(targetUrl, { waitUntil: 'domcontentloaded' });
-          return p;
+        const pageUrl = new URL(page.url());
+        if (pageUrl.host === target.host) {
+          if (!page.url().startsWith(targetUrl)) {
+            await page.goto(targetUrl, { waitUntil: 'domcontentloaded' });
+          }
+          return page;
         }
       } catch {
         // ignore, try next page
       }
     }
-    const fresh = await ctx.newPage();
-    await fresh.goto(targetUrl, { waitUntil: 'domcontentloaded' });
-    return fresh;
+    const freshPage = await context.newPage();
+    await freshPage.goto(targetUrl, { waitUntil: 'domcontentloaded' });
+    return freshPage;
   }
-  if (pages.length > 0 && pages[0]) return pages[0];
-  return ctx.newPage();
+  if (openPages.length > 0 && openPages[0]) return openPages[0];
+  return context.newPage();
 }

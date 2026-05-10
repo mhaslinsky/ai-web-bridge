@@ -32,6 +32,7 @@ export interface RunResult {
   };
 }
 
+/** Surfaced when args validation, adapter lookup, or origin policy fails before an action runs. */
 export class DispatcherError extends Error {
   constructor(public readonly code: string, message: string) {
     super(message);
@@ -39,6 +40,7 @@ export class DispatcherError extends Error {
   }
 }
 
+/** Validate args, enforce origin policy, and run the named action serialized through the queue. */
 export async function dispatch(
   adapter: AdapterDef,
   actionName: string,
@@ -53,28 +55,28 @@ export async function dispatch(
     );
   }
 
-  const parsed = action.params.safeParse(args ?? {});
-  if (!parsed.success) {
+  const parsedArgs = action.params.safeParse(args ?? {});
+  if (!parsedArgs.success) {
     throw new DispatcherError(
       'invalid_args',
-      `Args for ${adapter.slug}.${actionName} failed validation: ${parsed.error.message}`
+      `Args for ${adapter.slug}.${actionName} failed validation: ${parsedArgs.error.message}`
     );
   }
 
   return queue.run(async () => {
-    const ctx = await browser.getContext();
+    const context = await browser.getContext();
     const page = await browser.getPage(adapter.default_url);
 
     try {
       assertAllowedOrigin(page, adapter.allowed_origins);
-    } catch (err) {
-      if (err instanceof OriginPolicyError) {
-        throw new DispatcherError('origin_violation', err.message);
+    } catch (originError) {
+      if (originError instanceof OriginPolicyError) {
+        throw new DispatcherError('origin_violation', originError.message);
       }
-      throw err;
+      throw originError;
     }
 
-    const result = await action.run({ page, context: ctx }, parsed.data);
+    const result = await action.run({ page, context }, parsedArgs.data);
 
     return {
       result,
@@ -89,6 +91,7 @@ export async function dispatch(
   });
 }
 
+/** Run arbitrary JS inside the page (dev-only escape hatch — bypasses adapter origin policy). */
 export async function evalInPage(
   js: string,
   targetUrl?: string,

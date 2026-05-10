@@ -1,6 +1,7 @@
 import { getRuntimeStatus, getBrowser } from '../../server/browser.js';
 import { loadAdapters } from '../../server/adapter-loader.js';
 
+/** `ai-web-bridge status` — report Chromium PID, CDP reachability, loaded adapters, and open tab hosts. */
 export async function statusCommand(): Promise<void> {
   const status = await getRuntimeStatus();
   console.log(`Chromium running: ${status.chromeRunning ? `yes (PID ${status.pid})` : 'no'}`);
@@ -9,21 +10,21 @@ export async function statusCommand(): Promise<void> {
 
   const loaded = await loadAdapters();
   console.log(`Adapters loaded: ${loaded.list.length}`);
-  for (const a of loaded.list) {
-    console.log(`  - ${a.slug} (${a.display_name}) — origins: ${a.allowed_origins.join(', ')}`);
+  for (const adapter of loaded.list) {
+    console.log(`  - ${adapter.slug} (${adapter.display_name}) — origins: ${adapter.allowed_origins.join(', ')}`);
   }
 
   if (status.cdpReachable) {
     try {
       const browser = await getBrowser();
-      const ctxs = browser.contexts();
-      const pageHosts = ctxs
-        .flatMap((c) => c.pages())
-        .map((p) => {
+      const contexts = browser.contexts();
+      const pageHosts = contexts
+        .flatMap((context) => context.pages())
+        .map((page) => {
           try {
-            return new URL(p.url()).host;
+            return new URL(page.url()).host;
           } catch {
-            return p.url();
+            return page.url();
           }
         });
       console.log(`Open tabs (${pageHosts.length}): ${pageHosts.join(', ') || '(none)'}`);

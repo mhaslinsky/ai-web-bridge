@@ -21,6 +21,7 @@ export interface SnapshotResult {
   strategy: 'cdp-mhtml' | 'raw-html';
 }
 
+/** Capture the page as MHTML via CDP `Page.captureSnapshot` and write it to `destPath`. */
 export async function captureMhtml(page: Page, destPath: string): Promise<SnapshotResult> {
   const session = await page.context().newCDPSession(page);
   try {
@@ -40,6 +41,7 @@ export async function captureMhtml(page: Page, destPath: string): Promise<Snapsh
   }
 }
 
+/** Save raw `page.content()` HTML (no asset bundling — last-resort fallback). */
 export async function captureRawHtml(page: Page, destPath: string): Promise<SnapshotResult> {
   const html = await page.content();
   await writeFile(destPath, html, 'utf8');

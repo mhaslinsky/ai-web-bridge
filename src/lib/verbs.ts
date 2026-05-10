@@ -28,11 +28,12 @@ export interface VerbCheckResult {
   reason?: string;
 }
 
+/** Check a free-text instruction against the denylist + broad-scope combo guard. */
 export function checkInstruction(instruction: string): VerbCheckResult {
-  const trimmed = instruction.trim().toLowerCase();
-  if (!trimmed) return { ok: false, reason: 'instruction is empty' };
+  const normalized = instruction.trim().toLowerCase();
+  if (!normalized) return { ok: false, reason: 'instruction is empty' };
 
-  const tokens = trimmed.split(/\s+/);
+  const tokens = normalized.split(/\s+/);
   const firstVerb = tokens[0] ?? '';
 
   if (DENYLIST.includes(firstVerb)) {
@@ -44,13 +45,13 @@ export function checkInstruction(instruction: string): VerbCheckResult {
 
   // Catch broad-scope variants like "destroy all elements" or
   // "remove everything" even when split across the first few words.
-  const firstFour = tokens.slice(0, 4);
-  const hasDenyVerb = firstFour.some((t) => DENYLIST.includes(t));
-  const hasBroadScope = firstFour.some((t) => SCOPE_QUALIFIERS.includes(t));
-  if (hasDenyVerb && hasBroadScope) {
+  const firstFourTokens = tokens.slice(0, 4);
+  const hasDestructiveVerb = firstFourTokens.some((token) => DENYLIST.includes(token));
+  const hasBroadScopeQualifier = firstFourTokens.some((token) => SCOPE_QUALIFIERS.includes(token));
+  if (hasDestructiveVerb && hasBroadScopeQualifier) {
     return {
       ok: false,
-      reason: `instruction combines a destructive verb with a broad-scope qualifier ("${tokens.slice(0, 4).join(' ')}..."). Refused as a sanity check.`
+      reason: `instruction combines a destructive verb with a broad-scope qualifier ("${firstFourTokens.join(' ')}..."). Refused as a sanity check.`
     };
   }
 

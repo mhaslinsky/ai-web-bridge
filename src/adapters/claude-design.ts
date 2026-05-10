@@ -24,10 +24,11 @@ import { captureSnapshot } from '../lib/snapshot.js';
 const DESIGN_HOME = 'https://claude.ai/design';
 const ALLOWED_ORIGINS = ['claude.ai'] as const;
 
-async function ensureOnDesign(ctx: ActionContext): Promise<void> {
-  const url = ctx.page.url();
-  if (!url.startsWith('https://claude.ai/design')) {
-    await ctx.page.goto(DESIGN_HOME, { waitUntil: 'domcontentloaded' });
+/** Navigate to the design home only if we're not already somewhere under /design. */
+async function ensureOnDesign(context: ActionContext): Promise<void> {
+  const currentUrl = context.page.url();
+  if (!currentUrl.startsWith('https://claude.ai/design')) {
+    await context.page.goto(DESIGN_HOME, { waitUntil: 'domcontentloaded' });
   }
 }
 
@@ -36,10 +37,10 @@ async function ensureOnDesign(ctx: ActionContext): Promise<void> {
  * present. The per-design route (/design/p/<id>) does not always render the
  * full sidebar listing.
  */
-async function ensureOnDesignHome(ctx: ActionContext): Promise<void> {
-  const url = ctx.page.url();
-  if (url !== DESIGN_HOME && url !== `${DESIGN_HOME}/`) {
-    await ctx.page.goto(DESIGN_HOME, { waitUntil: 'domcontentloaded' });
+async function ensureOnDesignHome(context: ActionContext): Promise<void> {
+  const currentUrl = context.page.url();
+  if (currentUrl !== DESIGN_HOME && currentUrl !== `${DESIGN_HOME}/`) {
+    await context.page.goto(DESIGN_HOME, { waitUntil: 'domcontentloaded' });
   }
 }
 
@@ -49,10 +50,11 @@ interface DesignEntry {
   last_modified: string | null;
 }
 
-async function readSidebar(ctx: ActionContext): Promise<DesignEntry[]> {
-  await ensureOnDesignHome(ctx);
+/** Enumerate the canvases shown in the Claude Design home sidebar and return name+url+timestamp for each. */
+async function readSidebar(context: ActionContext): Promise<DesignEntry[]> {
+  await ensureOnDesignHome(context);
   // TODO(verify): the sidebar list may lazy-load; wait briefly for stability.
-  await ctx.page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => undefined);
+  await context.page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => undefined);
 
   // Heuristic: anchors pointing at design URLs. Inside each anchor, the title
   // and metadata may be siblings — innerText concatenates them. Strategy:
@@ -60,37 +62,37 @@ async function readSidebar(ctx: ActionContext): Promise<DesignEntry[]> {
   //   2. Otherwise split on the known "Your design" marker, which precedes the
   //      timestamp on every Claude Design sidebar entry observed so far.
   //   3. Fallback: full text content.
-  const entries = await ctx.page.evaluate(() => {
+  const entries = await context.page.evaluate(() => {
     const results: Array<{ name: string; url: string; last_modified: string | null }> = [];
     const anchors = Array.from(document.querySelectorAll('a[href*="/design/"]')) as HTMLAnchorElement[];
     const MARKER = 'Your design';
-    for (const a of anchors) {
-      const href = a.getAttribute('href') ?? '';
+    for (const anchor of anchors) {
+      const href = anchor.getAttribute('href') ?? '';
       if (!/\/design\/[A-Za-z0-9_-]+/.test(href)) continue;
       const fullUrl = new URL(href, location.origin).toString();
 
       let name = '';
       let last_modified: string | null = null;
 
-      const heading = a.querySelector('[role="heading"], h1, h2, h3, h4, h5, h6');
-      if (heading?.textContent) name = heading.textContent.trim();
+      const headingElement = anchor.querySelector('[role="heading"], h1, h2, h3, h4, h5, h6');
+      if (headingElement?.textContent) name = headingElement.textContent.trim();
 
-      const time = a.querySelector('time') ?? a.parentElement?.querySelector('time') ?? null;
-      if (time) {
-        const dt = time.getAttribute('datetime');
-        const tt = (time.textContent ?? '').trim();
-        last_modified = dt ?? (tt || null);
+      const timeElement = anchor.querySelector('time') ?? anchor.parentElement?.querySelector('time') ?? null;
+      if (timeElement) {
+        const datetimeAttribute = timeElement.getAttribute('datetime');
+        const timeText = (timeElement.textContent ?? '').trim();
+        last_modified = datetimeAttribute ?? (timeText || null);
       }
 
       if (!name) {
-        const fullText = (a.textContent ?? '').trim();
-        const idx = fullText.indexOf(MARKER);
-        if (idx > 0) {
-          name = fullText.slice(0, idx).trim();
+        const fullText = (anchor.textContent ?? '').trim();
+        const markerIndex = fullText.indexOf(MARKER);
+        if (markerIndex > 0) {
+          name = fullText.slice(0, markerIndex).trim();
           if (!last_modified) {
-            const tail = fullText.slice(idx + MARKER.length).trim();
-            const m = tail.match(/^[·••\s]+(.+)$/);
-            if (m && m[1]) last_modified = m[1].trim();
+            const trailingText = fullText.slice(markerIndex + MARKER.length).trim();
+            const trailingMatch = trailingText.match(/^[·••\s]+(.+)$/);
+            if (trailingMatch && trailingMatch[1]) last_modified = trailingMatch[1].trim();
           }
         } else {
           name = fullText;
@@ -100,35 +102,36 @@ async function readSidebar(ctx: ActionContext): Promise<DesignEntry[]> {
       if (!name) continue;
       results.push({ name, url: fullUrl, last_modified });
     }
-    const seen = new Set<string>();
-    return results.filter((r) => (seen.has(r.url) ? false : (seen.add(r.url), true)));
+    const seenUrls = new Set<string>();
+    return results.filter((entry) => (seenUrls.has(entry.url) ? false : (seenUrls.add(entry.url), true)));
   });
 
   return entries;
 }
 
-async function findDesignByName(ctx: ActionContext, name: string): Promise<DesignEntry | null> {
-  const entries = await readSidebar(ctx);
-  const lower = name.trim().toLowerCase();
-  // Prefer exact match, then case-insensitive, then prefix.
+/** Look up a sidebar entry by name (exact > case-insensitive > prefix), or null if no match. */
+async function findDesignByName(context: ActionContext, name: string): Promise<DesignEntry | null> {
+  const entries = await readSidebar(context);
+  const lowerName = name.trim().toLowerCase();
   return (
-    entries.find((e) => e.name === name) ??
-    entries.find((e) => e.name.toLowerCase() === lower) ??
-    entries.find((e) => e.name.toLowerCase().startsWith(lower)) ??
+    entries.find((entry) => entry.name === name) ??
+    entries.find((entry) => entry.name.toLowerCase() === lowerName) ??
+    entries.find((entry) => entry.name.toLowerCase().startsWith(lowerName)) ??
     null
   );
 }
 
-async function openByName(ctx: ActionContext, name: string): Promise<DesignEntry> {
-  const entry = await findDesignByName(ctx, name);
+/** Resolve a canvas by name and navigate the page to it; throw if no entry matches. */
+async function openByName(context: ActionContext, name: string): Promise<DesignEntry> {
+  const entry = await findDesignByName(context, name);
   if (!entry) {
     throw new Error(
       `No canvas named "${name}" found in the sidebar. Use list_designs to see available canvases.`
     );
   }
-  if (ctx.page.url() !== entry.url) {
-    await ctx.page.goto(entry.url, { waitUntil: 'domcontentloaded' });
-    await ctx.page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => undefined);
+  if (context.page.url() !== entry.url) {
+    await context.page.goto(entry.url, { waitUntil: 'domcontentloaded' });
+    await context.page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => undefined);
   }
   return entry;
 }
@@ -140,8 +143,8 @@ const list_designs: ActionDef<{}> = {
   mutates_state: false,
   writes_files: false,
   requires_confirmation: false,
-  run: async (ctx) => {
-    const designs = await readSidebar(ctx);
+  run: async (context) => {
+    const designs = await readSidebar(context);
     return { count: designs.length, designs };
   }
 };
@@ -153,8 +156,8 @@ const open_design: ActionDef<{ name: string }> = {
   mutates_state: false,
   writes_files: false,
   requires_confirmation: false,
-  run: async (ctx, { name }) => {
-    const entry = await openByName(ctx, name);
+  run: async (context, { name }) => {
+    const entry = await openByName(context, name);
     return { opened: entry };
   }
 };
@@ -172,17 +175,17 @@ const screenshot: ActionDef<{ name?: string; path?: string; full_page: boolean }
   mutates_state: false,
   writes_files: true,
   requires_confirmation: false,
-  run: async (ctx, args) => {
-    if (args.name) await openByName(ctx, args.name);
+  run: async (context, args) => {
+    if (args.name) await openByName(context, args.name);
 
-    const filename = (args.name ?? 'screenshot').replace(/[^A-Za-z0-9_.-]/g, '-');
-    const defaultDir = resolve(process.env.TMPDIR || '/tmp', 'ai-web-bridge', 'screenshots');
+    const safeFilename = (args.name ?? 'screenshot').replace(/[^A-Za-z0-9_.-]/g, '-');
+    const defaultDirectory = resolve(process.env.TMPDIR || '/tmp', 'ai-web-bridge', 'screenshots');
     const targetPath = args.path
       ? validateDestPath(args.path, { force: true })
-      : validateDestPath(join(defaultDir, `${filename}.png`), { force: true });
+      : validateDestPath(join(defaultDirectory, `${safeFilename}.png`), { force: true });
 
     await mkdir(dirname(targetPath), { recursive: true });
-    await ctx.page.screenshot({ path: targetPath, fullPage: args.full_page });
+    await context.page.screenshot({ path: targetPath, fullPage: args.full_page });
     return { path: targetPath, full_page: args.full_page };
   }
 };
@@ -227,16 +230,21 @@ const export_design: ActionDef<{ name: string; dest_dir: string; force: boolean 
   mutates_state: false,
   writes_files: true,
   requires_confirmation: false,
-  run: async (ctx, { name, dest_dir, force }) => {
-    await openByName(ctx, name);
+  run: async (context, { name, dest_dir, force }) => {
+    await openByName(context, name);
     const safeName = name.replace(/[^A-Za-z0-9_.-]/g, '-');
     const basePath = join(dest_dir, safeName);
     validateDestPath(`${basePath}.mhtml`, { force });
     validateDestPath(`${basePath}.html`, { force });
     await mkdir(dirname(basePath), { recursive: true });
-    await ctx.page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => undefined);
-    const out = await captureSnapshot(ctx.page, basePath);
-    return { path: out.path, bytes: out.bytes, format: out.format, strategy: out.strategy };
+    await context.page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => undefined);
+    const snapshot = await captureSnapshot(context.page, basePath);
+    return {
+      path: snapshot.path,
+      bytes: snapshot.bytes,
+      format: snapshot.format,
+      strategy: snapshot.strategy
+    };
   }
 };
 
@@ -249,14 +257,15 @@ const export_design: ActionDef<{ name: string; dest_dir: string; force: boolean 
 // works deterministically; revisit native HTML when the download-interception
 // path is fixed in Playwright or when we own the browser launch directly.
 
-async function extractCanvasText(ctx: ActionContext): Promise<string> {
+/** Pull plaintext content out of the canvas region for the LLM to summarize. */
+async function extractCanvasText(context: ActionContext): Promise<string> {
   // TODO(verify): the canvas content container needs to be identified by
   // inspecting a real canvas. Heuristic: prefer a [role="main"] region;
   // fall back to the largest contentful region in the body.
-  const text = await ctx.page.evaluate(() => {
-    const main = document.querySelector('[role="main"]');
-    const root = main ?? document.body;
-    return (root as HTMLElement).innerText.trim();
+  const text = await context.page.evaluate(() => {
+    const mainRegion = document.querySelector('[role="main"]');
+    const rootElement = mainRegion ?? document.body;
+    return (rootElement as HTMLElement).innerText.trim();
   });
   return text;
 }
@@ -274,12 +283,13 @@ const summarize_design: ActionDef<{ name: string; max_chars: number }> = {
   mutates_state: false,
   writes_files: false,
   requires_confirmation: false,
-  run: async (ctx, { name, max_chars }) => {
-    const entry = await openByName(ctx, name);
-    const text = await extractCanvasText(ctx);
-    const trimmed = text.length > max_chars ? text.slice(0, max_chars) + '\n... [truncated]' : text;
-    const wrapped = wrapUntrusted(`claude-design:${entry.name}`, trimmed);
-    return { canvas: entry, content: wrapped, length: text.length };
+  run: async (context, { name, max_chars }) => {
+    const entry = await openByName(context, name);
+    const canvasText = await extractCanvasText(context);
+    const truncated =
+      canvasText.length > max_chars ? canvasText.slice(0, max_chars) + '\n... [truncated]' : canvasText;
+    const wrapped = wrapUntrusted(`claude-design:${entry.name}`, truncated);
+    return { canvas: entry, content: wrapped, length: canvasText.length };
   }
 };
 
@@ -288,64 +298,67 @@ const summarize_design: ActionDef<{ name: string; max_chars: number }> = {
  * this is the load-bearing safety control for tell_canvas_chat — the original
  * is never modified.
  */
-async function duplicateCurrent(ctx: ActionContext): Promise<DesignEntry> {
-  const before = ctx.page.url();
+async function duplicateCurrent(context: ActionContext): Promise<DesignEntry> {
+  const urlBefore = context.page.url();
 
-  await openShareMenu(ctx.page);
-  await shareMenuItem(ctx.page, 'Duplicate project').first().click({ timeout: 5000 });
+  await openShareMenu(context.page);
+  await shareMenuItem(context.page, 'Duplicate project').first().click({ timeout: 5000 });
 
   // Claude Design navigates to the new canvas after duplication.
-  await ctx.page
-    .waitForURL((u) => {
-      const s = u.toString();
-      return s.includes('/design/p/') && !s.startsWith(before);
+  await context.page
+    .waitForURL((newUrl) => {
+      const newUrlString = newUrl.toString();
+      return newUrlString.includes('/design/p/') && !newUrlString.startsWith(urlBefore);
     }, { timeout: 15000 })
     .catch(() => undefined);
-  await ctx.page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => undefined);
+  await context.page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => undefined);
 
-  const after = ctx.page.url();
+  const urlAfter = context.page.url();
   // Claude Design sets document.title to the canvas name (e.g. "obsidian (Remix)")
   // once the duplicate loads. Briefly poll so we don't capture the stale "Claude Design".
-  const name = await ctx.page
+  const name = await context.page
     .waitForFunction(
       () => {
-        const t = document.title.trim();
-        return t && t.toLowerCase() !== 'claude design' ? t : null;
+        const title = document.title.trim();
+        return title && title.toLowerCase() !== 'claude design' ? title : null;
       },
       undefined,
       { timeout: 5000 }
     )
-    .then((handle) => handle.jsonValue() as Promise<string>)
+    .then((titleHandle) => titleHandle.jsonValue() as Promise<string>)
     .catch(() => 'duplicate');
-  return { name: name || 'duplicate', url: after, last_modified: null };
+  return { name: name || 'duplicate', url: urlAfter, last_modified: null };
 }
 
-async function sendCanvasChatInstruction(ctx: ActionContext, instruction: string): Promise<void> {
+/** Type `instruction` into the canvas chat input and submit via Cmd/Ctrl+Enter. */
+async function sendCanvasChatInstruction(context: ActionContext, instruction: string): Promise<void> {
   // The canvas chat input is a textarea with this exact placeholder. The
   // page also contains a "Add a comment..." textarea — using a placeholder
   // locator avoids hitting the wrong one.
-  const input = ctx.page.getByPlaceholder('Describe what you want to create...');
-  await input.first().waitFor({ state: 'visible', timeout: 10000 });
-  await input.first().fill(instruction, { timeout: 5000 });
+  const chatInput = context.page.getByPlaceholder('Describe what you want to create...');
+  await chatInput.first().waitFor({ state: 'visible', timeout: 10000 });
+  await chatInput.first().fill(instruction, { timeout: 5000 });
 
   // Submit. Claude Design uses Cmd+Enter (macOS) / Ctrl+Enter (Win/Linux) to
   // send chat messages — Enter alone inserts a newline. We focus the input
   // and use the platform-appropriate modifier.
-  await input.first().focus();
+  await chatInput.first().focus();
   const isMac = process.platform === 'darwin';
-  await ctx.page.keyboard.press(isMac ? 'Meta+Enter' : 'Control+Enter');
+  await context.page.keyboard.press(isMac ? 'Meta+Enter' : 'Control+Enter');
 
   // Verify the input was cleared (the typical signal that the send took).
   // If it didn't, fall back to clicking any visible Send button near the input.
-  const cleared = await input.first().evaluate((el: HTMLTextAreaElement) => el.value === '', undefined as unknown as never)
+  const inputCleared = await chatInput
+    .first()
+    .evaluate((element: HTMLTextAreaElement) => element.value === '', undefined as unknown as never)
     .catch(() => false);
-  if (!cleared) {
-    const sendBtn = ctx.page.locator('button', { hasText: /^\s*Send\s*$/ }).first();
-    await sendBtn.click({ timeout: 2000 }).catch(() => undefined);
+  if (!inputCleared) {
+    const sendButton = context.page.locator('button', { hasText: /^\s*Send\s*$/ }).first();
+    await sendButton.click({ timeout: 2000 }).catch(() => undefined);
   }
 
-  await ctx.page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => undefined);
-  await ctx.page.waitForTimeout(1500);
+  await context.page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => undefined);
+  await context.page.waitForTimeout(1500);
 }
 
 const tell_canvas_chat: ActionDef<{ name: string; instruction: string }> = {
@@ -361,33 +374,35 @@ const tell_canvas_chat: ActionDef<{ name: string; instruction: string }> = {
   mutates_state: true,
   writes_files: true,
   requires_confirmation: true,
-  run: async (ctx, { name, instruction }) => {
-    const verb = checkInstruction(instruction);
-    if (!verb.ok) {
-      throw new Error(`Refused: ${verb.reason}. To proceed, run the action manually in the automation browser.`);
+  run: async (context, { name, instruction }) => {
+    const verbCheck = checkInstruction(instruction);
+    if (!verbCheck.ok) {
+      throw new Error(
+        `Refused: ${verbCheck.reason}. To proceed, run the action manually in the automation browser.`
+      );
     }
 
-    const original = await openByName(ctx, name);
+    const original = await openByName(context, name);
 
-    const tmpDir = resolve(process.env.TMPDIR || '/tmp', 'ai-web-bridge', 'tell-canvas-chat');
-    await mkdir(tmpDir, { recursive: true });
-    const ts = Date.now();
-    const beforePath = validateDestPath(join(tmpDir, `${ts}-before.png`), { force: true });
-    await ctx.page
+    const screenshotsDirectory = resolve(process.env.TMPDIR || '/tmp', 'ai-web-bridge', 'tell-canvas-chat');
+    await mkdir(screenshotsDirectory, { recursive: true });
+    const timestamp = Date.now();
+    const beforePath = validateDestPath(join(screenshotsDirectory, `${timestamp}-before.png`), { force: true });
+    await context.page
       .screenshot({ path: beforePath, fullPage: false, timeout: 8000, animations: 'disabled' })
       .catch(() => undefined);
 
-    const duplicate = await duplicateCurrent(ctx);
+    const duplicate = await duplicateCurrent(context);
     if (duplicate.url === original.url) {
       throw new Error(
         'Duplicate did not produce a new canvas URL. Refusing to send the instruction; original would have been mutated.'
       );
     }
 
-    await sendCanvasChatInstruction(ctx, instruction);
+    await sendCanvasChatInstruction(context, instruction);
 
-    const afterPath = validateDestPath(join(tmpDir, `${ts}-after.png`), { force: true });
-    await ctx.page
+    const afterPath = validateDestPath(join(screenshotsDirectory, `${timestamp}-after.png`), { force: true });
+    await context.page
       .screenshot({ path: afterPath, fullPage: false, timeout: 8000, animations: 'disabled' })
       .catch(() => undefined);
 

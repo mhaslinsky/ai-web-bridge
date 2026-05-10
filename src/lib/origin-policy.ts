@@ -1,5 +1,6 @@
 import type { Page } from 'playwright';
 
+/** Thrown when a page is on a host outside the adapter's `allowed_origins`. */
 export class OriginPolicyError extends Error {
   constructor(public readonly currentUrl: string, public readonly allowed: readonly string[]) {
     super(
@@ -10,19 +11,21 @@ export class OriginPolicyError extends Error {
   }
 }
 
+/** True if `host` equals `allowedHost` or is a subdomain of it. */
 export function hostMatches(host: string, allowedHost: string): boolean {
   if (host === allowedHost) return true;
   return host.endsWith(`.${allowedHost}`);
 }
 
-export function assertAllowedOrigin(page: Page, allowed: readonly string[]): void {
-  const url = page.url();
-  let host: string;
+/** Throw OriginPolicyError unless `page` is on a host matching one in `allowedHosts`. */
+export function assertAllowedOrigin(page: Page, allowedHosts: readonly string[]): void {
+  const currentUrl = page.url();
+  let currentHost: string;
   try {
-    host = new URL(url).host;
+    currentHost = new URL(currentUrl).host;
   } catch {
-    throw new OriginPolicyError(url, allowed);
+    throw new OriginPolicyError(currentUrl, allowedHosts);
   }
-  const ok = allowed.some((a) => hostMatches(host, a));
-  if (!ok) throw new OriginPolicyError(url, allowed);
+  const isAllowed = allowedHosts.some((allowedHost) => hostMatches(currentHost, allowedHost));
+  if (!isAllowed) throw new OriginPolicyError(currentUrl, allowedHosts);
 }

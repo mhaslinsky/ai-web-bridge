@@ -5,17 +5,20 @@ import { loadAdapters } from './adapter-loader.js';
 import { buildEvalTool, buildListAdaptersTool, buildRunTool } from './tools.js';
 import { DispatcherError } from './dispatcher.js';
 
+/** True when AI_WEB_BRIDGE_DEV is set to "1" or "true" — gates the web_eval tool. */
 function isDevMode(): boolean {
-  const v = process.env.AI_WEB_BRIDGE_DEV;
-  return v === '1' || v === 'true';
+  const flag = process.env.AI_WEB_BRIDGE_DEV;
+  return flag === '1' || flag === 'true';
 }
 
+/** Wrap a tool handler's payload as an MCP `content: [{ type: 'text', ... }]` result. */
 function asMcpResult(payload: unknown) {
   return {
     content: [{ type: 'text' as const, text: JSON.stringify(payload, null, 2) }]
   };
 }
 
+/** Wrap any error as an MCP `isError: true` result so the calling LLM sees a structured failure. */
 function asMcpError(err: unknown) {
   const message =
     err instanceof DispatcherError
@@ -29,22 +32,23 @@ function asMcpError(err: unknown) {
   };
 }
 
+/** Boot the MCP server over stdio: load adapters, register tools, install signal handlers. */
 async function main() {
   const loaded = await loadAdapters();
   const server = new McpServer({ name: 'ai-web-bridge', version: '0.1.0' });
 
-  const list = buildListAdaptersTool(loaded);
-  const run = buildRunTool(loaded);
+  const listAdaptersTool = buildListAdaptersTool(loaded);
+  const runTool = buildRunTool(loaded);
 
   server.registerTool(
-    list.name,
+    listAdaptersTool.name,
     {
-      description: list.description,
+      description: listAdaptersTool.description,
       inputSchema: {}
     },
     async () => {
       try {
-        return asMcpResult(await list.handler());
+        return asMcpResult(await listAdaptersTool.handler());
       } catch (err) {
         return asMcpError(err);
       }
@@ -52,9 +56,9 @@ async function main() {
   );
 
   server.registerTool(
-    run.name,
+    runTool.name,
     {
-      description: run.description,
+      description: runTool.description,
       inputSchema: {
         adapter: z.string().describe('Adapter slug, e.g. "claude-design"'),
         action: z.string().describe('Action name, e.g. "list_designs"'),
@@ -63,7 +67,7 @@ async function main() {
     },
     async (input) => {
       try {
-        return asMcpResult(await run.handler(input));
+        return asMcpResult(await runTool.handler(input));
       } catch (err) {
         return asMcpError(err);
       }
@@ -71,11 +75,11 @@ async function main() {
   );
 
   if (isDevMode()) {
-    const ev = buildEvalTool();
+    const evalTool = buildEvalTool();
     server.registerTool(
-      ev.name,
+      evalTool.name,
       {
-        description: ev.description,
+        description: evalTool.description,
         inputSchema: {
           js: z.string(),
           target_url: z.string().url().optional()
@@ -83,7 +87,7 @@ async function main() {
       },
       async (input) => {
         try {
-          return asMcpResult(await ev.handler(input));
+          return asMcpResult(await evalTool.handler(input));
         } catch (err) {
           return asMcpError(err);
         }

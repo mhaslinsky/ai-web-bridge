@@ -6,18 +6,19 @@ const SITE_HINTS: Record<string, string> = {
   'claude-design': 'https://claude.ai/login'
 };
 
+/** `ai-web-bridge login <site>` — open the named site in the automation profile so the user can sign in. */
 export async function loginCommand(site: string): Promise<void> {
   const status = await getRuntimeStatus();
   if (!status.cdpReachable) await launchChromium();
 
   // Resolve a target URL. Prefer adapter-specified default_url; fall back to a hint or raw site.
   const loaded = await loadAdapters();
-  const adapter = loaded.byslug.get(site);
-  let targetUrl = adapter?.default_url ?? SITE_HINTS[site];
+  const matchedAdapter = loaded.byslug.get(site);
+  let targetUrl = matchedAdapter?.default_url ?? SITE_HINTS[site];
   if (!targetUrl) targetUrl = `https://${site.replace(/^https?:\/\//, '')}`;
 
-  const ctx = await getContext();
-  const page = await ctx.newPage();
+  const context = await getContext();
+  const page = await context.newPage();
   await page.goto(targetUrl, { waitUntil: 'domcontentloaded' });
   page.bringToFront().catch(() => undefined);
   console.log(
