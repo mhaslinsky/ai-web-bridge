@@ -4,11 +4,18 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { AdapterDef } from './adapter-types.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const ADAPTERS_DIR = resolve(HERE, '..', 'adapters');
+const DEFAULT_ADAPTERS_DIR = resolve(HERE, '..', 'adapters');
 
 export interface LoadedAdapters {
   byslug: Map<string, AdapterDef>;
   list: AdapterDef[];
+}
+
+export interface LoadAdaptersOptions {
+  /** Directory to scan for adapter modules. Defaults to dist/adapters/. */
+  dir?: string;
+  /** Sink for non-fatal warnings (invalid shape, duplicate slug). Defaults to console.error. */
+  warn?: (message: string) => void;
 }
 
 function isAdapter(x: unknown): x is AdapterDef {
@@ -24,31 +31,39 @@ function isAdapter(x: unknown): x is AdapterDef {
   );
 }
 
-export async function loadAdapters(): Promise<LoadedAdapters> {
+export async function loadAdapters(opts: LoadAdaptersOptions = {}): Promise<LoadedAdapters> {
+  const dir = opts.dir ?? DEFAULT_ADAPTERS_DIR;
+  const warn = opts.warn ?? ((m: string) => console.error(m));
+
   const byslug = new Map<string, AdapterDef>();
   const list: AdapterDef[] = [];
 
   let entries: string[] = [];
   try {
-    entries = await readdir(ADAPTERS_DIR);
+    entries = await readdir(dir);
   } catch {
     return { byslug, list };
   }
 
   for (const file of entries) {
     if (!file.endsWith('.js') && !file.endsWith('.mjs')) continue;
-    const fullPath = join(ADAPTERS_DIR, file);
-    const url = pathToFileURL(fullPath).href;
-    const mod = (await import(url)) as { adapter?: unknown };
+    const fullPath = join(dir, file);
+    // Cache-bust so tests can reload mutated adapter files in the same process.
+    const url = pathToFileURL(fullPath).href + `?t=${Date.now()}`;
+    let mod: { adapter?: unknown };
+    try {
+      mod = (await import(url)) as { adapter?: unknown };
+    } catch (err) {
+      warn(`[ai-web-bridge] skipping ${file}: import failed (${err instanceof Error ? err.message : String(err)})`);
+      continue;
+    }
     const candidate = mod.adapter;
     if (!isAdapter(candidate)) {
-      // eslint-disable-next-line no-console
-      console.error(`[ai-web-bridge] skipping ${file}: missing or invalid \`adapter\` export`);
+      warn(`[ai-web-bridge] skipping ${file}: missing or invalid \`adapter\` export`);
       continue;
     }
     if (byslug.has(candidate.slug)) {
-      // eslint-disable-next-line no-console
-      console.error(`[ai-web-bridge] duplicate adapter slug: ${candidate.slug} (skipping ${file})`);
+      warn(`[ai-web-bridge] duplicate adapter slug: ${candidate.slug} (skipping ${file})`);
       continue;
     }
     byslug.set(candidate.slug, candidate);

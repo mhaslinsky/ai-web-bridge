@@ -1,10 +1,24 @@
-import { z } from 'zod';
+import type { BrowserContext, Page } from 'playwright';
 import { ActionQueue } from '../lib/action-queue.js';
 import { assertAllowedOrigin, OriginPolicyError } from '../lib/origin-policy.js';
 import { getContext, getPage } from './browser.js';
 import type { AdapterDef, ActionDef } from './adapter-types.js';
 
 const queue = new ActionQueue();
+
+/**
+ * Indirection over the live browser so tests can dispatch with a mock Page /
+ * BrowserContext. Production code passes the real getters from browser.ts.
+ */
+export interface BrowserAccess {
+  getContext: () => Promise<BrowserContext>;
+  getPage: (url?: string) => Promise<Page>;
+}
+
+const defaultBrowserAccess: BrowserAccess = {
+  getContext,
+  getPage
+};
 
 export interface RunResult {
   result: unknown;
@@ -28,7 +42,8 @@ export class DispatcherError extends Error {
 export async function dispatch(
   adapter: AdapterDef,
   actionName: string,
-  args: unknown
+  args: unknown,
+  browser: BrowserAccess = defaultBrowserAccess
 ): Promise<RunResult> {
   const action = adapter.actions[actionName] as ActionDef | undefined;
   if (!action) {
@@ -47,8 +62,8 @@ export async function dispatch(
   }
 
   return queue.run(async () => {
-    const ctx = await getContext();
-    const page = await getPage(adapter.default_url);
+    const ctx = await browser.getContext();
+    const page = await browser.getPage(adapter.default_url);
 
     try {
       assertAllowedOrigin(page, adapter.allowed_origins);
@@ -74,9 +89,13 @@ export async function dispatch(
   });
 }
 
-export async function evalInPage(js: string, targetUrl?: string): Promise<unknown> {
+export async function evalInPage(
+  js: string,
+  targetUrl?: string,
+  browser: BrowserAccess = defaultBrowserAccess
+): Promise<unknown> {
   return queue.run(async () => {
-    const page = await getPage(targetUrl);
+    const page = await browser.getPage(targetUrl);
     return page.evaluate(`(async () => { ${js} })()`);
   });
 }

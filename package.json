@@ -12,6 +12,7 @@
     "build": "tsup",
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit",
+    "pretest": "npm run build",
     "test": "node --import tsx --test --test-reporter=spec test/*.test.ts",
     "start": "node dist/server/index.js",
     "cli": "node dist/cli/index.js"
