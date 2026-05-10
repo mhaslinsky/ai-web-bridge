@@ -1,0 +1,32 @@
+{
+  "name": "ai-web-bridge",
+  "version": "0.1.0",
+  "description": "MCP server that lets Claude Code (and other AI CLIs) operate auth-walled web tools via a dedicated Chromium profile",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "ai-web-bridge": "./dist/cli/index.js",
+    "ai-web-bridge-server": "./dist/server/index.js"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "start": "node dist/server/index.js",
+    "cli": "node dist/cli/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "commander": "^12.1.0",
+    "playwright": "^1.48.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsup": "^8.3.0",
+    "typescript": "^5.6.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

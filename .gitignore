@@ -1,0 +1,15 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+.env
+.env.local
+
+# Local profile data should never live in the repo (it lives at ~/.ai-web-bridge/)
+profile/
+.ai-web-bridge/
+
+# Screenshots emitted during testing
+screenshots/
+*.png
+!docs/**/*.png
