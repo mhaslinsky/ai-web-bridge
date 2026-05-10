@@ -1,8 +1,8 @@
 # ai-web-bridge
 
-A small MCP server that lets Claude Code (and other MCP-aware AI CLIs) operate auth-walled web tools by attaching to a dedicated Chromium profile via Playwright CDP.
+An MCP server that lets Claude Code (and other MCP-aware AI clients) drive auth-walled web tools through a dedicated Chromium profile via Playwright CDP. **v1 ships an adapter for [claude.ai/design](https://claude.ai/design)**; adding a new web tool is one TypeScript file under `src/adapters/`.
 
-v1 ships a single adapter for [claude.ai/design](https://claude.ai/design): list / open / screenshot / export / summarize / drive-the-canvas-chat. Adding a new web tool is one TypeScript file under `src/adapters/`.
+> **Status: v1, personal-tool maturity.** Verified end-to-end against the live claude.ai/design UI as of this commit. Selectors are inherently DOM-fragile — when Anthropic ships UI changes, expect to tune locators in `src/adapters/claude-design.ts`. PRs welcome if you fix yours.
 
 ## Why
 
@@ -11,32 +11,35 @@ Some web tools have no MCP, no CLI, and no public API — Claude Design among th
 ## Architecture
 
 ```
-Claude Code  /  any MCP client
+Claude Code  /  any MCP-aware client
       ↓ stdio
 ai-web-bridge MCP server
-      ↓ Playwright CDP
-Automation Chromium (user-data-dir: ~/.ai-web-bridge/profile)
-      ↓ logged-in HTTPS
-claude.ai/design  (and future adapters)
+      ↓ Playwright CDP (chromium.connectOverCDP)
+Automation Chromium  (--user-data-dir=~/.ai-web-bridge/profile)
+      ↓ logged-in HTTPS, persistent session
+claude.ai/design   (and future adapters)
 ```
 
-- **Dedicated profile.** Chromium runs with `--user-data-dir=~/.ai-web-bridge/profile`, separate from your daily-driver browser. You sign in once per site; the profile keeps the cookies. Blast radius is bounded to what you've explicitly logged into.
-- **2-tool dispatcher surface.** Adding 10 sites with 6 actions each adds **zero tools** to the MCP global surface — they're discovered via `web_list_adapters` and dispatched via `web_run`.
+- **Dedicated profile.** Chromium runs separate from your daily-driver browser. You sign in once per site; the profile keeps the cookies. Blast radius is bounded to what you've explicitly logged into.
+- **2-tool dispatcher surface.** Adding 10 sites with 6 actions each adds **zero tools** to the MCP global surface — they're discovered via `web_list_adapters` and dispatched via `web_run`. Action metadata (risk level, mutates state, writes files, requires confirmation) is returned on discovery so callers know what they're invoking.
 - **Server-enforced origin policy.** Each adapter declares allowed hosts; the dispatcher refuses to operate when the page has navigated elsewhere.
 - **Per-profile action queue.** Concurrent calls are serialized to prevent races on a stateful browser.
-- **Path constraints.** Actions that emit files are restricted to `os.tmpdir()` and `~/Desktop/AIDB/` by default; path traversal and silent overwrites are rejected.
+- **Path constraints.** Actions that emit files write only to `os.tmpdir()` or `~/Desktop/AIDB/` by default; path traversal and silent overwrites are rejected.
+- **`tell_canvas_chat` safety contract.** AI-instruction edits always operate on a freshly-duplicated canvas (driven via Share → "Duplicate project"). The original is never modified — to revert, delete the duplicate. A verb sanity layer adds a coarse filter; the duplication is what makes the action safe.
 
 ## Install
 
-Requires Node 20+.
+Requires Node 20+ and the `claude` CLI on your PATH (so the installer can register the MCP server via `claude mcp add`).
 
 ```bash
-git clone <this repo> ~/Developer/ai-web-bridge
-cd ~/Developer/ai-web-bridge
+git clone https://github.com/<you>/ai-web-bridge.git
+cd ai-web-bridge
 ./scripts/install.sh
 ```
 
-The installer runs `npm install`, downloads Playwright's Chromium, builds the project, registers an `ai-web-bridge` entry in `~/.claude/settings.json` (or prints the snippet to add manually if the file already exists), and symlinks `ai-web-bridge` to `~/.local/bin`.
+The installer runs `npm install`, downloads Playwright's Chromium, builds the project, registers an `ai-web-bridge` entry at the user scope via `claude mcp add` (writes to `~/.claude.json`), and symlinks the `ai-web-bridge` CLI to `~/.local/bin`.
+
+If you don't have `claude` on PATH the script will print the exact command to run manually.
 
 ## First-time setup
 
@@ -46,15 +49,29 @@ ai-web-bridge login claude-design   # opens claude.ai in the automation profile;
 ai-web-bridge status                # confirm Chromium is up and tabs are visible
 ```
 
-Restart Claude Code. `/mcp` should show `ai-web-bridge` connected with two tools.
+Restart Claude Code (or reconnect via `/mcp`). `/mcp` should show `ai-web-bridge` connected with two tools.
 
 ## Usage from Claude Code
 
 ```
 > use web_list_adapters
 > using web_run, call claude-design.list_designs
-> using web_run, call claude-design.export_design with name="my canvas" and dest_dir="~/Desktop/AIDB/_global/personal/my-project/design"
+> using web_run, call claude-design.export_design with name="my canvas" and dest_dir="/tmp/exports"
+> using web_run, call claude-design.tell_canvas_chat with name="my canvas" and instruction="add a small label"
 ```
+
+## claude-design actions
+
+| Action | Risk | What it does |
+|---|---|---|
+| `list_designs` | read | Sidebar enumeration: `[{name, url, last_modified}, ...]` |
+| `open_design` | navigation | Navigate to a specific canvas |
+| `screenshot` | read | PNG capture of current canvas |
+| `export_design` | read | MHTML snapshot via CDP `Page.captureSnapshot`. Output: `<dest>/<name>.mhtml`. Opens in Chromium-based browsers. |
+| `summarize_design` | read | Extract canvas text content, wrap in `<untrusted-content>` markers |
+| `tell_canvas_chat` | mutation | Drive Share → Duplicate project, send instruction to the duplicate via Cmd+Enter. Original untouched. |
+
+`tell_canvas_chat` returns `{original, duplicate, before_screenshot, after_screenshot}` — surface both screenshots to the user before chaining further actions.
 
 ## Adding a new adapter
 
@@ -71,8 +88,8 @@ const list_things: ActionDef<{}> = {
   mutates_state: false,
   writes_files: false,
   requires_confirmation: false,
-  run: async (ctx) => {
-    return await ctx.page.evaluate(() => /* extract from DOM */);
+  run: async ({ page }) => {
+    return await page.evaluate(() => /* extract from DOM */);
   }
 };
 
@@ -85,11 +102,9 @@ export const adapter: AdapterDef = {
 };
 ```
 
-Then `npm run build && ai-web-bridge stop && ai-web-bridge start` (cold reload) and add a login session: `ai-web-bridge login my-site`.
+Then `npm run build && ai-web-bridge stop && ai-web-bridge start` (cold reload) and create a session: `ai-web-bridge login my-site`.
 
 ### Action metadata fields
-
-Every action declares its risk profile so callers can see what they're invoking:
 
 | Field | Meaning |
 |---|---|
@@ -100,21 +115,31 @@ Every action declares its risk profile so callers can see what they're invoking:
 
 ## Development mode (`web_eval`)
 
-`web_eval` (arbitrary JS in the page) is **not registered by default** because it bypasses every adapter-level safety boundary. To enable it for prototyping a new adapter:
+`web_eval` (arbitrary JS in the page) is **not registered by default** because it bypasses every adapter-level safety boundary. To enable it for prototyping a new adapter, set `AI_WEB_BRIDGE_DEV=1` in the MCP server's environment:
 
-```bash
-AI_WEB_BRIDGE_DEV=1 ai-web-bridge serve
+```jsonc
+// ~/.claude.json (excerpt)
+{
+  "mcpServers": {
+    "ai-web-bridge": {
+      "command": "node",
+      "args": [".../dist/server/index.js"],
+      "env": { "AI_WEB_BRIDGE_DEV": "1" }
+    }
+  }
+}
 ```
 
-Or, in your MCP client config, set `env: { "AI_WEB_BRIDGE_DEV": "1" }` for the `ai-web-bridge` server. Disable in production use.
+Disable when done. Reconnect ai-web-bridge in `/mcp` after toggling.
 
-## Limitations
+## Known limitations
 
-- **Selectors will break when claude.ai changes their DOM.** Mitigated by Playwright's role/text locators, not eliminated. When an action breaks, fix the locator in `src/adapters/claude-design.ts` and rebuild.
-- **`tell_canvas_chat` operates on a fresh duplicate** of the named canvas — the original is never modified. To revert, manually delete the duplicate. The verb sanity layer is *not* a security mitigation; the duplication is.
-- **Single-file export fidelity is not guaranteed** for every canvas. Manually verify against ≥3 real canvases before treating the output as canonical.
-- **Codex compatibility is untested.** The MCP surface is generic, but v1 is verified with Claude Code only.
+- **Selectors break when claude.ai changes their DOM.** Mitigated by Playwright's role/text locators (and a discoverable Share menu, which has been stable so far) but not eliminated. When an action breaks, fix the locator in `src/adapters/claude-design.ts` and rebuild.
+- **Export is MHTML, not standalone HTML.** Claude Design has a built-in "Export as standalone HTML" item in the Share menu, but Playwright via `connectOverCDP` does not reliably surface those downloads. CDP `Page.captureSnapshot` produces a faithful MHTML snapshot that opens in any Chromium-based browser. Fidelity verified offline. Native HTML support remains an open question for a future revision.
+- **`tell_canvas_chat` accumulates `(Remix)` duplicates.** Each invocation creates a new duplicate canvas in your account. Delete them when you're done verifying.
+- **Cold reload only.** Adding or editing an adapter requires `ai-web-bridge stop && start` and an MCP client reconnect. No hot-reload.
+- **Codex compatibility is untested.** The MCP surface is generic and should work with any stdio-capable MCP client, but v1 is verified with Claude Code only.
 
 ## License
 
-MIT
+MIT — see `LICENSE`.
