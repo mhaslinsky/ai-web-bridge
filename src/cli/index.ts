@@ -4,6 +4,12 @@ import { stopCommand } from './commands/stop.js';
 import { statusCommand } from './commands/status.js';
 import { loginCommand } from './commands/login.js';
 import { serveCommand } from './commands/serve.js';
+import {
+  profilesAddCommand,
+  profilesListCommand,
+  profilesRemoveCommand,
+  profilesUseCommand
+} from './commands/profiles.js';
 
 const program = new Command();
 program
@@ -45,6 +51,41 @@ program
   .description('Run the MCP server in the foreground (stdio transport)')
   .action(async () => {
     await serveCommand();
+  });
+
+const profiles = program
+  .command('profiles')
+  .description('Manage named login profiles (each profile is a separate Chromium user-data-dir)');
+
+profiles
+  .command('list')
+  .description('List all profiles; the active one is prefixed with *')
+  .action(async () => {
+    await profilesListCommand();
+  });
+
+profiles
+  .command('add')
+  .argument('<name>', 'Profile name (lowercase alphanumeric, dashes, underscores)')
+  .description('Create a new empty profile')
+  .action(async (name: string) => {
+    await profilesAddCommand(name);
+  });
+
+profiles
+  .command('use')
+  .argument('<name>', 'Profile name to make active')
+  .description('Switch the active profile (subsequent calls target this profile)')
+  .action(async (name: string) => {
+    await profilesUseCommand(name);
+  });
+
+profiles
+  .command('remove')
+  .argument('<name>', 'Profile name to delete')
+  .description('Delete a profile (refuses the active profile and the last remaining profile)')
+  .action(async (name: string) => {
+    await profilesRemoveCommand(name);
   });
 
 program.parseAsync(process.argv).catch((err) => {
