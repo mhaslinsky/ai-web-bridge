@@ -77,7 +77,9 @@ Restart Claude Code (or reconnect via `/mcp`). `/mcp` should show `ai-web-bridge
 
 ## Adding a new adapter
 
-Drop a TypeScript file at `src/adapters/<slug>.ts` exporting `adapter: AdapterDef`:
+For a step-by-step walkthrough — site discovery via dev-mode `web_eval`, picking resilient locators, the duplicate-before-mutate pattern for safe mutations, contract tests, and verification — read [`docs/NEW_ADAPTER_GUIDE.md`](docs/NEW_ADAPTER_GUIDE.md).
+
+The minimum-viable adapter is one TypeScript file at `src/adapters/<slug>.ts` exporting `adapter: AdapterDef`:
 
 ```ts
 import { z } from 'zod';
@@ -104,7 +106,7 @@ export const adapter: AdapterDef = {
 };
 ```
 
-Then `npm run build && ai-web-bridge stop && ai-web-bridge start` (cold reload) and create a session: `ai-web-bridge login my-site`.
+Then `npm run build && ai-web-bridge stop && ai-web-bridge start` (cold reload) and create a session: `ai-web-bridge login my-site`. See the [new-adapter guide](docs/NEW_ADAPTER_GUIDE.md) for the full walkthrough.
 
 ### Action metadata fields
 
@@ -134,9 +136,13 @@ Then `npm run build && ai-web-bridge stop && ai-web-bridge start` (cold reload) 
 
 Disable when done. Reconnect ai-web-bridge in `/mcp` after toggling.
 
+## When something breaks
+
+Selectors against a site you don't own are inherently fragile. When an action stops working — see [`docs/ADAPTER_TROUBLESHOOTING.md`](docs/ADAPTER_TROUBLESHOOTING.md). It's a step-by-step playbook (diagnose → probe DOM via dev-mode `web_eval` → fix → verify) with reusable JS snippets and a catalog of breakage patterns we've already seen and resolved. Hand it to an AI agent or work through it yourself.
+
 ## Known limitations
 
-- **Selectors break when claude.ai changes their DOM.** Mitigated by Playwright's role/text locators (and a discoverable Share menu, which has been stable so far) but not eliminated. When an action breaks, fix the locator in `src/adapters/claude-design.ts` and rebuild.
+- **Selectors break when claude.ai changes their DOM.** Mitigated by Playwright's role/text locators (and a discoverable Share menu, which has been stable so far) but not eliminated. When an action breaks, follow `docs/ADAPTER_TROUBLESHOOTING.md`.
 - **Export is MHTML, not standalone HTML.** Claude Design has a built-in "Export as standalone HTML" item in the Share menu, but Playwright via `connectOverCDP` does not reliably surface those downloads. CDP `Page.captureSnapshot` produces a faithful MHTML snapshot that opens in any Chromium-based browser. Fidelity verified offline. Native HTML support remains an open question for a future revision.
 - **`tell_canvas_chat` accumulates `(Remix)` duplicates.** Each invocation creates a new duplicate canvas in your account. Delete them when you're done verifying.
 - **Cold reload only.** Adding or editing an adapter requires `ai-web-bridge stop && start` and an MCP client reconnect. No hot-reload.
