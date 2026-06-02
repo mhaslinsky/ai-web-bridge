@@ -390,12 +390,23 @@ async function duplicateCurrent(context: ActionContext): Promise<DesignEntry> {
  * to disappear (generation done). If the Stop signal never appears we fall back
  * to a network-quiet wait so the function still returns on older/changed UIs.
  *
- * Returns whether a generation cycle was actually observed.
+ * Returns a status distinguishing the three outcomes — callers must not treat
+ * them all as success:
+ *   'completed'  — Stop control appeared then disappeared within the window.
+ *   'timed_out'  — Stop control appeared but was still visible after 180s; the
+ *                  after-screenshot likely captures a partial/in-progress render.
+ *   'unobserved' — no Stop control ever appeared (finished instantly, or the
+ *                  control's accessible name differs from what we match). We
+ *                  fell back to a network-quiet wait and cannot confirm.
  */
-async function waitForGenerationComplete(context: ActionContext): Promise<boolean> {
+type GenerationStatus = 'completed' | 'timed_out' | 'unobserved';
+
+async function waitForGenerationComplete(context: ActionContext): Promise<GenerationStatus> {
   // TODO(verify): confirm the streaming control's accessible name against a real
-  // canvas; tune this locator if Claude Design labels it differently.
-  const stopControl = context.page.getByRole('button', { name: /stop/i });
+  // canvas; tune this locator if Claude Design labels it differently. Match the
+  // common abort labels so a "Cancel"/"Abort" rename doesn't silently degrade to
+  // the unobserved fallback.
+  const stopControl = context.page.getByRole('button', { name: /stop|cancel|abort/i });
 
   const started = await stopControl
     .first()
@@ -408,23 +419,28 @@ async function waitForGenerationComplete(context: ActionContext): Promise<boolea
     // is stale. Settle on the network and bail; don't reload to "check".
     await context.page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => undefined);
     process.stderr.write('[ai-web-bridge] generation: no Stop control observed; used networkidle fallback\n');
-    return false;
+    return 'unobserved';
   }
 
   // Generation is streaming. Wait for the Stop control to detach/hide. Long
-  // timeout — a full canvas regeneration can take well over a minute.
-  await stopControl
+  // timeout — a full canvas regeneration can take well over a minute. If it never
+  // hides, report 'timed_out' rather than claiming success.
+  const hidden = await stopControl
     .first()
     .waitFor({ state: 'hidden', timeout: 180000 })
-    .catch(() => process.stderr.write('[ai-web-bridge] generation: Stop control still visible after 180s timeout\n'));
+    .then(() => true)
+    .catch(() => {
+      process.stderr.write('[ai-web-bridge] generation: Stop control still visible after 180s timeout\n');
+      return false;
+    });
 
   // Brief settle so the final render lands before the after-screenshot.
   await context.page.waitForTimeout(1000);
-  return true;
+  return hidden ? 'completed' : 'timed_out';
 }
 
 /** Type `instruction` into the canvas chat input and submit via Cmd/Ctrl+Enter. Resolves once generation finishes. */
-async function sendCanvasChatInstruction(context: ActionContext, instruction: string): Promise<boolean> {
+async function sendCanvasChatInstruction(context: ActionContext, instruction: string): Promise<GenerationStatus> {
   // The canvas chat input is a textarea with this exact placeholder. The
   // page also contains a "Add a comment..." textarea — using a placeholder
   // locator avoids hitting the wrong one.
@@ -494,23 +510,35 @@ const tell_canvas_chat: ActionDef<{ name: string; instruction: string }> = {
       );
     }
 
-    const generationCompleted = await sendCanvasChatInstruction(context, instruction);
+    const generationStatus = await sendCanvasChatInstruction(context, instruction);
 
     const afterPath = validateDestPath(join(screenshotsDirectory, `${timestamp}-after.png`), { force: true });
     await context.page
       .screenshot({ path: afterPath, fullPage: false, timeout: 8000, animations: 'disabled' })
       .catch(() => undefined);
 
+    // Status-specific guidance — the after-screenshot only reflects a finished
+    // render when generationStatus === 'completed'.
+    const statusNote: Record<GenerationStatus, string> = {
+      completed:
+        'Generation finished: the Stop control appeared then cleared, so after_screenshot captures the finished result on duplicate.url.',
+      timed_out:
+        'Generation did NOT finish within 180s (Stop control still visible). after_screenshot likely shows a partial/in-progress render — re-screenshot duplicate.url later (with NO name) to see the final result; do not assume the instruction is complete.',
+      unobserved:
+        'Generation could not be confirmed: no Stop control was observed (it may have finished instantly, or the control was renamed). after_screenshot may or may not show the final result — verify by re-screenshotting duplicate.url (with NO name).'
+    };
+
     return {
       original,
       duplicate,
-      generation_completed: generationCompleted,
+      generation_status: generationStatus,
+      generation_completed: generationStatus === 'completed',
       before_screenshot: beforePath,
       after_screenshot: afterPath,
       instruction,
       note:
         'Original canvas was NOT modified. The instruction was applied to the duplicated canvas. ' +
-        'Generation was already awaited before this returned; after_screenshot captures the finished result on duplicate.url. ' +
+        `${statusNote[generationStatus]} ` +
         'Do NOT re-open the original or call another action to "check progress" — re-navigating reloads the page and aborts any in-flight generation. ' +
         'To inspect the result, use screenshot/summarize_design with NO name (stays on the current duplicate). To revert, manually delete the duplicate at duplicate.url.'
     };
