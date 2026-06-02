@@ -135,8 +135,14 @@ async function findDesignByName(context: ActionContext, name: string): Promise<D
   const caseInsensitive = entries.find((entry) => entry.name.toLowerCase() === lowerName);
   if (caseInsensitive) return caseInsensitive;
 
-  // Allow callers to pass a full canvas url or its id (both are in list_designs output).
-  const byUrl = entries.find((entry) => entry.url === query || entry.url.includes(query));
+  // Allow callers to pass a full canvas url or its exact id (both in list_designs
+  // output). Match the id segment with === rather than a substring include — a
+  // bare includes() lets short queries ("p", "ai", "design") match every url and
+  // silently return the wrong canvas, which tell_canvas_chat would then duplicate.
+  const idSegment = (url: string): string | null => url.match(/\/design\/(?:p\/)?([A-Za-z0-9_-]+)/)?.[1] ?? null;
+  const byUrl = entries.find((entry) =>
+    query.startsWith('http') ? entry.url === query : idSegment(entry.url) === query
+  );
   if (byUrl) return byUrl;
 
   const prefix = entries.find((entry) => entry.name.toLowerCase().startsWith(lowerName));
