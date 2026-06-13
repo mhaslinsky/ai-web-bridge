@@ -383,7 +383,18 @@ async function resolveChatInput(context: ActionContext) {
   const COMPOSER_PLACEHOLDER =
     /describe what you want to create|describe your changes|reply to claude|ask claude|message claude|make (a )?change|tell claude|what would you like|how can claude/i;
 
-  const candidate = page.getByPlaceholder(COMPOSER_PLACEHOLDER).first();
+  // Match either a <textarea>/<input> (placeholder attribute) or a
+  // contenteditable rich-text composer (ProseMirror/Tiptap/Slate). Those
+  // editors don't carry a `placeholder` attribute — getByPlaceholder misses
+  // them — but they're exposed as role="textbox" with the placeholder surfaced
+  // as the accessible name (aria-label), so getByRole catches them. The
+  // accessible-name filter also keeps us off the "Add a comment..." box. A
+  // contenteditable that sets ONLY data-placeholder (no accessible name) still
+  // won't match — that case falls to the self-diagnosing error below.
+  const candidate = page
+    .getByPlaceholder(COMPOSER_PLACEHOLDER)
+    .or(page.getByRole('textbox', { name: COMPOSER_PLACEHOLDER }))
+    .first();
   const visible = await candidate
     .waitFor({ state: 'visible', timeout: 10000 })
     .then(() => true)

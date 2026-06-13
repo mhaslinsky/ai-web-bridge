@@ -1,7 +1,9 @@
 /**
  * Coarse sanity layer for free-text instructions passed to an in-page AI
- * (e.g. Claude Design's canvas chat). NOT a security mitigation — the
- * load-bearing safety control for tell_canvas_chat is duplicate-before-mutate.
+ * (e.g. Claude Design's canvas chat). NOT a security mitigation — for
+ * tell_canvas_chat the real guard is requires_confirmation (the caller must
+ * confirm before the canvas is mutated in place); this list is only a coarse
+ * pre-flight filter layered on top of that.
  *
  * This list catches obviously-broad/destructive instructions that a careful
  * caller would never issue. It is intentionally conservative; it does not

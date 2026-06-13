@@ -28,7 +28,7 @@ claude.ai/design   (and future adapters)
 - **Server-enforced origin policy.** Each adapter declares allowed hosts; the dispatcher refuses to operate when the page has navigated elsewhere.
 - **Per-profile action queue.** Concurrent calls are serialized to prevent races on a stateful browser.
 - **Path constraints.** Actions that emit files write only to `os.tmpdir()` or `~/Desktop/AIDB/` by default; path traversal and silent overwrites are rejected.
-- **`tell_canvas_chat` safety contract.** AI-instruction edits always operate on a freshly-duplicated canvas (driven via Share → "Duplicate project"). The original is never modified — to revert, delete the duplicate. A verb sanity layer adds a coarse filter; the duplication is what makes the action safe.
+- **`tell_canvas_chat` safety contract.** AI-instruction edits modify the named canvas **in place** — there is no automatic duplicate. The action is flagged `requires_confirmation: true`, so callers must confirm before it runs, and a coarse verb sanity layer rejects obviously-destructive instructions pre-flight. If you need to preserve the original, duplicate it yourself first.
 
 ## Install
 
@@ -92,13 +92,13 @@ Migration note: if you installed before named-profile support, the legacy `~/.ai
 | `screenshot` | read | PNG capture of current canvas |
 | `export_design` | read | MHTML snapshot via CDP `Page.captureSnapshot`. Output: `<dest>/<name>.mhtml`. Opens in Chromium-based browsers. |
 | `summarize_design` | read | Extract canvas text content, wrap in `<untrusted-content>` markers |
-| `tell_canvas_chat` | mutation | Drive Share → Duplicate project, send instruction to the duplicate via Cmd+Enter. Original untouched. |
+| `tell_canvas_chat` | mutation | Send an instruction to the canvas chat via Cmd+Enter. Modifies the named canvas **in place**; `requires_confirmation`. |
 
-`tell_canvas_chat` returns `{original, duplicate, before_screenshot, after_screenshot}` — surface both screenshots to the user before chaining further actions.
+`tell_canvas_chat` returns `{canvas, generation_status, before_screenshot, after_screenshot}` — surface both screenshots to the user before chaining further actions.
 
 ## Adding a new adapter
 
-For a step-by-step walkthrough — site discovery via dev-mode `web_eval`, picking resilient locators, the duplicate-before-mutate pattern for safe mutations, contract tests, and verification — read [`docs/NEW_ADAPTER_GUIDE.md`](docs/NEW_ADAPTER_GUIDE.md).
+For a step-by-step walkthrough — site discovery via dev-mode `web_eval`, picking resilient locators, safe-mutation patterns (confirm-before-mutate, duplicate-before-mutate), contract tests, and verification — read [`docs/NEW_ADAPTER_GUIDE.md`](docs/NEW_ADAPTER_GUIDE.md).
 
 The minimum-viable adapter is one TypeScript file at `src/adapters/<slug>.ts` exporting `adapter: AdapterDef`:
 
@@ -165,7 +165,7 @@ Selectors against a site you don't own are inherently fragile. When an action st
 
 - **Selectors break when claude.ai changes their DOM.** Mitigated by Playwright's role/text locators (and a discoverable Share menu, which has been stable so far) but not eliminated. When an action breaks, follow `docs/ADAPTER_TROUBLESHOOTING.md`.
 - **Export is MHTML, not standalone HTML.** Claude Design has a built-in "Export as standalone HTML" item in the Share menu, but Playwright via `connectOverCDP` does not reliably surface those downloads. CDP `Page.captureSnapshot` produces a faithful MHTML snapshot that opens in any Chromium-based browser. Fidelity verified offline. Native HTML support remains an open question for a future revision.
-- **`tell_canvas_chat` accumulates `(Remix)` duplicates.** Each invocation creates a new duplicate canvas in your account. Delete them when you're done verifying.
+- **`tell_canvas_chat` modifies the canvas in place.** There is no automatic duplicate and no built-in undo — the named canvas is edited directly. Duplicate it yourself first if you need to keep the original.
 - **Cold reload only.** Adding or editing an adapter requires `ai-web-bridge stop && start` and an MCP client reconnect. No hot-reload.
 - **Codex compatibility is untested.** The MCP surface is generic and should work with any stdio-capable MCP client, but v1 is verified with Claude Code only.
 
