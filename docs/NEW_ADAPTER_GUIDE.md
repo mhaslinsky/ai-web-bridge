@@ -189,16 +189,11 @@ Mismatched metadata is a footgun — a destructive action flagged `read` will be
 
 ## Step 8 — adding a mutating action (do this carefully)
 
-If your adapter needs to mutate (post a comment, edit a record, send a message), apply the **duplicate-before-mutate** pattern from `claude-design.ts → tell_canvas_chat` whenever the site supports it:
+If your adapter needs to mutate (post a comment, edit a record, send a message), pick a safety shape for the action and encode it in the metadata. Options, roughly strongest to weakest:
 
-1. Drive the site's "duplicate" / "fork" / "save copy" affordance.
-2. Verify the duplicate has a different identity (URL, ID, etc.) before continuing.
-3. Apply the mutation to the duplicate.
-4. Return both the original and the duplicate's identity so the user can revert by deleting the duplicate.
-
-When the site doesn't support duplication (and many don't), the alternatives are:
-
-- **Read-then-confirm:** the action returns a *plan* of what it would change, with `requires_confirmation: true`. The user explicitly invokes a follow-up `apply` action to execute. Two-call pattern.
+- **Duplicate-before-mutate:** drive the site's "duplicate" / "fork" / "save copy" affordance, verify the copy has a distinct identity (URL, ID) before continuing, mutate the copy, and return both identities so the user can revert by deleting the copy. Safest *when the site supports cheap duplication* — but a per-call duplicate is pure friction when the user just wants to edit the live artifact (`claude-design.ts → tell_canvas_chat` started here and dropped it for exactly that reason).
+- **Confirm-before-mutate:** flag the action `requires_confirmation: true` so the caller must explicitly confirm before it runs, then mutate in place. This is what `claude-design.ts → tell_canvas_chat` does now. Pair it with `before`/`after` screenshots in the return so the result is verifiable.
+- **Read-then-confirm (two-call):** the action returns a *plan* of what it would change, with `requires_confirmation: true`. The user explicitly invokes a follow-up `apply` action to execute.
 - **Reversible-only verbs:** restrict the action's surface to verbs that have a clear undo path on the site (e.g. you can always edit a Notion block, so editing is fine; deleting requires a different ceremony).
 - **Refuse:** if the action has no safe-by-construction shape on this site, don't ship it. Comment it out and document why.
 
@@ -294,6 +289,6 @@ The fields are all load-bearing. Don't skip metadata — callers (including futu
 
 ## Resources
 
-- [`src/adapters/claude-design.ts`](../src/adapters/claude-design.ts) — the reference adapter. Read it before writing yours; it shows the duplicate-before-mutate pattern, resilient locators, and the action structure in real use.
+- [`src/adapters/claude-design.ts`](../src/adapters/claude-design.ts) — the reference adapter. Read it before writing yours; it shows confirmation-gated in-place mutation, resilient locators, and the action structure in real use.
 - [`docs/ADAPTER_TROUBLESHOOTING.md`](ADAPTER_TROUBLESHOOTING.md) — when something breaks (and it will).
 - [`src/server/adapter-types.ts`](../src/server/adapter-types.ts) — the canonical types.
