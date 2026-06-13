@@ -245,6 +245,7 @@ export async function getPage(targetUrl?: string, profile?: string): Promise<Pag
         const pageUrl = new URL(page.url());
         if (pageUrl.host === target.host) {
           if (!page.url().startsWith(targetUrl)) {
+            process.stderr.write(`[ai-web-bridge] nav(getPage:reuse): ${page.url()} -> ${targetUrl}\n`);
             await page.goto(targetUrl, { waitUntil: 'domcontentloaded' });
           }
           return page;
@@ -254,6 +255,7 @@ export async function getPage(targetUrl?: string, profile?: string): Promise<Pag
       }
     }
     const freshPage = await context.newPage();
+    process.stderr.write(`[ai-web-bridge] nav(getPage:newtab): -> ${targetUrl}\n`);
     await freshPage.goto(targetUrl, { waitUntil: 'domcontentloaded' });
     return freshPage;
   }
